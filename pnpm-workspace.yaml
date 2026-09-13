@@ -1,0 +1,6 @@
+packages:
+  - 'packages/*'
+
+# apps/web 刻意不列入 workspace：控制台需要 React/Vite 工具链，
+# 而引擎（packages/*）保持零依赖、`node xxx.ts` 直接可跑。
+# 两者独立安装、互不影响。

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "defaultProvider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "kind": "openai-compat",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      "defaultModel": "deepseek-flash",
+      "jsonMode": "auto"
+    }
+  },
+  "roles": {
+    "pm": { "provider": "deepseek", "model": "deepseek-flash", "temperature": 0.3 },
+    "host": { "provider": "deepseek", "model": "deepseek-flash", "temperature": 0.1 },
+    "frontend": { "provider": "deepseek", "model": "deepseek-flash", "temperature": 0.2 },
+    "backend": { "provider": "deepseek", "model": "deepseek-flash", "temperature": 0.2 },
+    "test": { "provider": "deepseek", "model": "deepseek-flash", "temperature": 0.2 }
+  },
+  "budget": { "totalTokens": 2000000, "onExceed": "stop" },
+  "probe": { "enabled": true, "useCache": true }
+}

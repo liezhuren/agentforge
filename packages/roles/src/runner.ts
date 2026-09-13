@@ -1,0 +1,366 @@
+/**
+ * LLM 角色运行器：把「角色」变成一次受 schema 约束的模型调用。
+ *
+ * 三个关键机制：
+ *  1. **读权限在代码里强制**：上下文装配时只放入该角色可读的工件类型。
+ *     不是「在提示词里请求它别看别人的东西」—— 它根本拿不到。
+ *  2. **schema 门禁 + 结构化重试**：校验失败不是盲目重试，而是把**具体的校验错误**
+ *     回喂给模型让它修正，这比「重试三次取最好」有效得多，也便宜得多。
+ *  3. **purpose 路由键**：`produce:CodeModule:api` 这种稳定的键既用于 MockProvider 路由，
+ *     也用于 runs/ 回放录制 —— 同一输入必然命中同一条记录。
+ */
+
+import {
+  ARTIFACT_CONTENT_SCHEMAS,
+  buildRepairHint,
+  formatSchemaErrors,
+  validateSchema,
+  type JsonSchema,
+} from '../../core/src/schemas.ts';
+import type { ArtifactKind, LlmRequest, RoleId, WorkOrder } from '../../core/src/types.ts';
+import type { Logger } from '../../core/src/logger.ts';
+import { silentLogger } from '../../core/src/logger.ts';
+import type { LlmProvider } from '../../llm/src/types.ts';
+import { ROLE_SYSTEM_PROMPTS, ROLE_TEMPERATURE } from './prompts.ts';
+import {
+  READ_PERMISSIONS,
+  type ProduceRequest,
+  type ProduceResult,
+  type RoleContext,
+  type RoleRunner,
+} from './types.ts';
+
+export type LlmRoleRunnerOptions = {
+  role: RoleId;
+  provider: LlmProvider;
+  temperature?: number;
+  maxTokens?: number;
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  /** 结构化重试上限。 */
+  maxAttempts?: number;
+  model?: string;
+  logger?: Logger;
+  /** 单个工件在上下文里最多渲染多少字符（防止上下文爆炸）。 */
+  maxContextChars?: number;
+};
+
+/**
+ * 稳定的 purpose 键。Mock 路由与回放录制都依赖它。
+ */
+export function purposeFor(action: 'produce' | 'repair' | 'roundtable', kind?: ArtifactKind, scope?: string): string {
+  if (action === 'roundtable') return `roundtable:${kind ?? 'session'}`;
+  return `${action}:${kind}${scope ? `:${scope}` : ''}`;
+}
+
+/**
+ * 把**项目自己的约定**明确告诉角色。
+ *
+ * 存在的理由（真实 LLM 实测发现的缺陷，见 docs/07 §L5）：
+ * 第一次用真实模型跑完整流程时，A4（编译）报了 7 个错误、A5（测试）也失败，
+ * 根因**只有一个**：模型写的相对导入没有 `.ts` 扩展名，例如
+ * `import { createApp } from './app'`。
+ *
+ * 而这不是模型的错 —— 那对绝大多数 TS 项目是完全正常的写法。
+ * 是这个项目的 tsconfig 要求显式扩展名（`allowImportingTsExtensions` +
+ * `moduleResolution: NodeNext`），而**没有人告诉模型这件事**。
+ *
+ * 关键认识：**这类失败看起来像「模型能力不足」，实际是「约定没有传达」。**
+ * 锚点判得完全正确（那确实是编译错误），错的是编排层没把约定说清楚 ——
+ * 于是模型按另一套规则写代码，然后被按这一套规则判定。
+ *
+ * 约定必须来自 profile，而不是在提示词里写死一条通用建议：
+ * 不同项目约定不同，写死会让 AgentForge 只能生成跟它自己一模一样的项目。
+ */
+function renderConventions(ctx: RoleContext): string {
+  const lines: string[] = [];
+
+  lines.push(`语言：TypeScript；源码目录：${ctx.profile.srcDir}；tsconfig：${ctx.profile.tsconfigPath}`);
+
+  // 相对导入扩展名这件事由 tsconfig 的选项推出，不是凭空写死的建议。
+  // Node 原生类型剥离（生成的代码要能被 node 直接运行）要求相对导入带显式扩展名。
+  lines.push(
+    '相对导入必须带**显式文件扩展名**（例如 `./app.ts`、`../shared/contract-types.ts`）。' +
+      '本项目的代码由 Node 原生类型剥离直接运行，且 tsconfig 开启了 allowImportingTsExtensions —— ' +
+      '写成 `./app` 会同时导致编译失败（TS2835）与运行期无法解析模块。' +
+      '这与多数前端项目（bundler 解析、或写 `.js` 后缀）的做法不同，请以本条为准。',
+  );
+
+  lines.push('只允许使用 Node 内置模块与已声明的依赖，不要引入未声明的第三方包。');
+
+  // 项目声明的环境约束 —— 由**项目**决定，而不是引擎硬编码（见 ProjectProfile.environmentNotes）
+  for (const note of ctx.profile.environmentNotes ?? []) {
+    lines.push(note);
+  }
+
+  if (ctx.profile.typecheck) {
+    lines.push(
+      `编译检查命令是 \`${ctx.profile.typecheck.cmd} ${ctx.profile.typecheck.args.join(' ')}\`，你的产出必须能通过它。`,
+    );
+  } else {
+    lines.push('当前没有可执行的编译检查命令 —— 你的产出不会被类型检查，请自行保证类型正确。');
+  }
+  if (ctx.profile.test) {
+    lines.push(`测试命令是 \`${ctx.profile.test.cmd} ${ctx.profile.test.args.join(' ')}\`，测试必须能被它真的跑起来。`);
+  }
+
+  return `【项目约定（必须遵守）】\n${lines.map((l) => `- ${l}`).join('\n')}`;
+}
+
+export class LlmRoleRunner implements RoleRunner {
+  readonly role: RoleId;
+  private provider: LlmProvider;
+  private temperature: number;
+  private maxAttempts: number;
+  private model?: string;
+  private maxTokens?: number;
+  private reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  private logger: Logger;
+  private maxContextChars: number;
+
+  constructor(opts: LlmRoleRunnerOptions) {
+    this.role = opts.role;
+    this.provider = opts.provider;
+    this.temperature = opts.temperature ?? ROLE_TEMPERATURE[opts.role];
+    this.maxAttempts = opts.maxAttempts ?? 3;
+    this.model = opts.model;
+    this.maxTokens = opts.maxTokens;
+    this.reasoningEffort = opts.reasoningEffort;
+    this.logger = opts.logger ?? silentLogger(`role:${opts.role}`);
+    this.maxContextChars = opts.maxContextChars ?? 24_000;
+  }
+
+  async produce(req: ProduceRequest, ctx: RoleContext): Promise<ProduceResult> {
+    return this.runWithRetry(req, ctx, 'produce');
+  }
+
+  async repair(order: WorkOrder, ctx: RoleContext): Promise<ProduceResult> {
+    const target = typeof order.target === 'string' ? order.target : order.target.newKind;
+    const kind: ArtifactKind = typeof target === 'string' && target.includes('CodeModule') ? 'CodeModule' : (target as ArtifactKind);
+    const req: ProduceRequest = {
+      kind,
+      ...(order.target && typeof order.target !== 'string' && order.target.scope
+        ? { scope: order.target.scope }
+        : {}),
+      instruction: [
+        `你收到一张派工单 ${order.id}，必须修复下列问题。`,
+        `验收条件（必须逐条满足）：`,
+        ...order.acceptance.map((a, i) => `  ${i + 1}. ${a}`),
+        '',
+        '问题详情：',
+        JSON.stringify(order.reason, null, 2).slice(0, 4000),
+      ].join('\n'),
+    };
+    return this.runWithRetry(req, ctx, 'repair');
+  }
+
+  private async runWithRetry(
+    req: ProduceRequest,
+    ctx: RoleContext,
+    action: 'produce' | 'repair',
+  ): Promise<ProduceResult> {
+    const schema = ARTIFACT_CONTENT_SCHEMAS[req.kind];
+    if (!schema) {
+      return { kind: req.kind, content: null, attempts: 0, schemaError: `未知工件类型 ${req.kind}` };
+    }
+
+    let repairHint: string | undefined;
+    let lastError = '';
+    let lastLlm: ProduceResult['llm'];
+
+    for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
+      const request = this.buildRequest({ role: this.role, req, ctx, action, repairHint, attempt });
+      const res = await this.provider.complete(request);
+      lastLlm = {
+        provider: res.provider,
+        model: res.model,
+        runId: res.runId,
+        latencyMs: res.latencyMs,
+      };
+
+      // 模型没返回可用 JSON（例如降级到 prompt-only 模式时）
+      if (res.json === undefined) {
+        lastError = res.parseError ?? '模型未返回可解析的 JSON';
+        repairHint = `你上一次的回复不是合法的 JSON（${lastError}）。请只输出一个 JSON 对象，不要任何解释文字或 Markdown 围栏。`;
+        this.logger.warn(`${this.role} 第 ${attempt + 1} 次产出无法解析，将重试`, { purpose: request.purpose });
+        continue;
+      }
+
+      const errors = validateSchema(res.json, schema, schema);
+      if (errors.length === 0) {
+        return { kind: req.kind, content: res.json, attempts: attempt + 1, ...(lastLlm ? { llm: lastLlm } : {}) };
+      }
+
+      lastError = formatSchemaErrors(errors);
+      repairHint = buildRepairHint(errors);
+      this.logger.warn(`${this.role} 第 ${attempt + 1} 次产出未过 schema，回喂错误后重试`, {
+        purpose: request.purpose,
+        errors: errors.length,
+      });
+    }
+
+    // 结构化重试全部失败：如实报告，不伪造工件。
+    // 上层会把这次失败当作一个确定性失败处理（生成工单或升级），而不是把坏工件写进库里。
+    return {
+      kind: req.kind,
+      content: null,
+      attempts: this.maxAttempts,
+      schemaError: `结构化重试 ${this.maxAttempts} 次后仍未通过 schema 校验：\n${lastError}`,
+      ...(lastLlm ? { llm: lastLlm } : {}),
+    };
+  }
+
+  /** 构造请求。导出以便测试断言「上下文里只有该角色有权读的工件」。 */
+  buildRequest(args: {
+    role: RoleId;
+    req: ProduceRequest;
+    ctx: RoleContext;
+    action: 'produce' | 'repair';
+    repairHint?: string;
+    attempt: number;
+  }): LlmRequest {
+    const { req, ctx, action, repairHint, attempt } = args;
+    const schema = ARTIFACT_CONTENT_SCHEMAS[req.kind] as JsonSchema;
+
+    const messages: LlmRequest['messages'] = [
+      { role: 'system', content: ROLE_SYSTEM_PROMPTS[this.role] },
+      { role: 'user', content: this.renderContext(req, ctx) },
+    ];
+
+    if (repairHint) {
+      messages.push({ role: 'assistant', content: '(上一次输出因未通过校验被退回)' });
+      messages.push({ role: 'user', content: repairHint });
+    }
+
+    return {
+      role: this.role,
+      purpose: purposeFor(action, req.kind, req.scope),
+      messages,
+      schema,
+      schemaName: req.kind,
+      temperature: this.temperature,
+      attempt,
+      ...(this.model ? { model: this.model } : {}),
+      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+      ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
+    };
+  }
+
+  private renderContext(req: ProduceRequest, ctx: RoleContext): string {
+    const readable = new Set(READ_PERMISSIONS[this.role]);
+    const parts: string[] = [];
+
+    parts.push(`【当前阶段】${ctx.stage}`);
+    parts.push(`【用户的原始诉求】\n${ctx.userBrief}`);
+    parts.push(renderConventions(ctx));
+
+    if (ctx.directives.length > 0) {
+      parts.push(
+        `【真人用户的建议书（优先级最高，不可违背、不可重新解释）】\n` +
+          ctx.directives
+            .map((d, i) => `${i + 1}. [${d.kind}] ${d.text}${d.constraints ? `\n   硬约束：${d.constraints.join('；')}` : ''}`)
+            .join('\n'),
+      );
+    }
+
+    if (ctx.contractHash) {
+      parts.push(
+        `【冻结契约 hash】${ctx.contractHash}\n` +
+          `下游工件必须绑定这个 hash。契约已冻结，任何一方都不得单方面改动。`,
+      );
+    }
+
+    if (req.scope) parts.push(`【你负责的范围】${req.scope}`);
+    if (req.taskId) parts.push(`【对应任务】${req.taskId}`);
+    if (req.requirementIds?.length) parts.push(`【对应需求】${req.requirementIds.join(', ')}`);
+
+    // 接口化通信的核心：只放入该角色**有权读**的工件（代码里过滤，不靠提示词约束）
+    const blocks: string[] = [];
+    let budget = this.maxContextChars;
+    for (const kind of readable) {
+      const arts = ctx.store.heads(kind);
+      for (const a of arts) {
+        const role = a.producer;
+        // 同一角色自己的历史产出可以看（便于版本接续），别人的只读公开发布的工件
+        const body = JSON.stringify(a.content, null, 2);
+        if (body.length > budget) continue;
+        budget -= body.length;
+        blocks.push(`--- 工件 ${a.id}（${a.kind}${a.scope ? `/${a.scope}` : ''} by ${role} v${a.version}）---\n${body}`);
+        if (budget <= 0) break;
+      }
+      if (budget <= 0) break;
+    }
+
+    parts.push(
+      blocks.length > 0
+        ? `【你可读的工件（这就是你与其他角色之间的全部通信内容）】\n${blocks.join('\n\n')}`
+        : `【你可读的工件】目前没有任何已发布的工件。`,
+    );
+
+    if (ctx.workOrders.length > 0) {
+      parts.push(
+        `【你当前持有的工单】\n` +
+          ctx.workOrders
+            .map((o) => `- ${o.id} → ${o.to}：${JSON.stringify(o.reason).slice(0, 300)}\n  验收：${o.acceptance.join('；')}`)
+            .join('\n'),
+      );
+    }
+
+    parts.push(`【本次任务】\n${req.instruction}`);
+    parts.push(`【输出要求】严格输出符合 ${req.kind} schema 的单个 JSON 对象，不要任何额外文字。`);
+
+    return parts.join('\n\n');
+  }
+}
+
+/** 为五个角色各建一个运行器（共用一个 Provider）。 */
+export function createRoleRunners(
+  provider: LlmProvider,
+  opts: { logger?: Logger; model?: string } = {},
+): Record<RoleId, LlmRoleRunner> {
+  const roles: RoleId[] = ['pm', 'frontend', 'backend', 'test', 'host'];
+  const out = {} as Record<RoleId, LlmRoleRunner>;
+  for (const role of roles) {
+    out[role] = new LlmRoleRunner({
+      role,
+      provider,
+      ...(opts.logger ? { logger: opts.logger.child(role) } : {}),
+      ...(opts.model ? { model: opts.model } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * 按**角色绑定**创建运行器：每个角色可以有独立的 provider / 模型 / 温度 / 上限。
+ *
+ * 这是「给用户找他期望的 LLM 的权利」真正生效的地方 ——
+ * 同一场 run 里，主理人可以用推理模型（找茬质量最关键），
+ * 前后端用便宜的模型（代码量大、锚点会兜底），测试用长上下文模型（要读全部代码）。
+ */
+export function createBoundRoleRunners(
+  providers: Record<RoleId, LlmProvider>,
+  bindings: Partial<
+    Record<
+      RoleId,
+      { temperature?: number; maxTokens?: number; model?: string; reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' }
+    >
+  >,
+  opts: { logger?: Logger; maxAttempts?: number } = {},
+): Record<RoleId, LlmRoleRunner> {
+  const roles: RoleId[] = ['pm', 'frontend', 'backend', 'test', 'host'];
+  const out = {} as Record<RoleId, LlmRoleRunner>;
+  for (const role of roles) {
+    const b = bindings[role] ?? {};
+    out[role] = new LlmRoleRunner({
+      role,
+      provider: providers[role],
+      ...(b.temperature !== undefined ? { temperature: b.temperature } : {}),
+      ...(b.maxTokens !== undefined ? { maxTokens: b.maxTokens } : {}),
+      ...(b.model !== undefined ? { model: b.model } : {}),
+      ...(b.reasoningEffort !== undefined ? { reasoningEffort: b.reasoningEffort } : {}),
+      ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
+      ...(opts.logger ? { logger: opts.logger.child(role) } : {}),
+    });
+  }
+  return out;
+}

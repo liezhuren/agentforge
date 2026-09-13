@@ -1,0 +1,26 @@
+{
+  "name": "@agentforge/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentForge 控制台前端（React + Vite）",
+  "scripts": {
+    "dev": "vite --configLoader native",
+    "//build": "必须带 --configLoader native",
+    "//build-why": "Vite 默认会用 rolldown 打包配置，其上有个 windowsSafeRealPathSync 会 exec('net use') 来探测网络驱动器；在禁止管道 stdio 的环境里这会直接 EPERM 崩掉。native 加载器跳过这一步。",
+    "build": "vite build --configLoader native",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --configLoader native"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "typescript": "^7.0.0",
+    "vite": "^8.0.0"
+  }
+}

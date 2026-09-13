@@ -1,0 +1,208 @@
+import { useState } from 'react';
+import { api, type FullState } from '../api.ts';
+
+/**
+ * 人类介入区 —— **必须首屏可达**。
+ *
+ * 这是「真人建议书高于一切机器人意见」这条优先级的入口（docs/05 §2.1）。
+ * 如果它藏在二级菜单里，实际上就等于没有 —— 人类介入的价值在于「随时」。
+ *
+ * 五种建议书类型不是凑数：
+ *   resume（强制推进）与 hold（物理刹车）是打破死锁与紧急止损的**唯一**手段，
+ *   它们是「主理人无法让项目停死」这条不变量的最后一道保险。
+ */
+
+const KINDS: Array<{ kind: string; label: string; hint: string; danger?: boolean }> = [
+  { kind: 'resume', label: '解除阻断 · 强制推进', hint: '打破死锁的终极手段。优先级高于一切机器人意见。', danger: true },
+  { kind: 'hold', label: '暂停流水线', hint: '物理刹车：编排器在下一个阶段边界停下（不会强杀，避免半写状态）。', danger: true },
+  { kind: 'override', label: '推翻某个决定', hint: '例如「不要按主理人的意思改，按原契约实现」。' },
+  {
+    kind: 'constraint',
+    label: '追加硬约束',
+    hint:
+      '能被机械校验的写法：「不得引入 lodash」「只允许 leftpad-real」——' +
+      '由 A1 锚点在门禁中强制校验，违反即 FAIL 并派工单。' +
+      '其它写法（如「代码风格要简洁」）无法机械校验，只会作为指令传给角色 —— 提交后下面会明确标出是哪一类。',
+  },
+  { kind: 'requirement', label: '修改/追加需求', hint: '系统会生成新的需求条目并纳入覆盖矩阵。' },
+];
+
+export function HumanPanel({ state, onDone }: { state: FullState; onDone: () => void }) {
+  const [kind, setKind] = useState('resume');
+  const [text, setText] = useState('');
+  const [constraints, setConstraints] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const disabled = !state.runtime;
+
+  async function submit() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.directive({
+        kind,
+        text,
+        ...(kind === 'constraint' && constraints.trim()
+          ? { constraints: constraints.split('\n').map((s) => s.trim()).filter(Boolean) }
+          : {}),
+      });
+      setMsg({ ok: true, text: '建议书已写入决策日志（append-only 哈希链，不可忽略、不可重新解释）' });
+      setText('');
+      setConstraints('');
+      onDone();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel human">
+      <header className="panel-head">
+        <h2>真人介入</h2>
+        <span className="muted small">优先级：建议书 &gt; 冻结契约 &gt; 主理人异议 &gt; 角色意见</span>
+      </header>
+
+      {disabled && <div className="muted small">先启动一次 run，才能投递建议书。</div>}
+
+      <div className="kind-row">
+        {KINDS.map((k) => (
+          <button
+            key={k.kind}
+            className={`chip ${kind === k.kind ? 'on' : ''} ${k.danger ? 'danger' : ''}`}
+            onClick={() => setKind(k.kind)}
+            title={k.hint}
+            disabled={disabled}
+          >
+            {k.label}
+          </button>
+        ))}
+      </div>
+      <div className="muted small">{KINDS.find((k) => k.kind === kind)?.hint}</div>
+
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={
+          kind === 'resume'
+            ? '说明为什么应当继续推进（这条会进决策日志）'
+            : kind === 'constraint'
+              ? '例如：不得引入 lodash'
+              : '写清楚你要改变什么'
+        }
+        rows={3}
+        disabled={disabled}
+      />
+      {kind === 'constraint' && (
+        <textarea
+          value={constraints}
+          onChange={(e) => setConstraints(e.target.value)}
+          placeholder="每条约束一行，例如：&#10;不得引入 lodash&#10;必须先冻结契约再写代码"
+          rows={2}
+          disabled={disabled}
+        />
+      )}
+
+      <div className="row">
+        <button className="primary" onClick={submit} disabled={disabled || busy || text.trim().length === 0}>
+          {busy ? '提交中…' : '提交建议书'}
+        </button>
+        <button
+          className="danger"
+          disabled={disabled || busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.pause('人类从控制台暂停');
+              setMsg({ ok: true, text: '已提交 hold 建议书 —— 编排器会在下一个阶段边界停下' });
+              onDone();
+            } catch (e) {
+              setMsg({ ok: false, text: (e as Error).message });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          立即暂停
+        </button>
+      </div>
+
+      {msg && <div className={`notice ${msg.ok ? 'ok' : 'bad'}`}>{msg.text}</div>}
+
+      {state.directives.length > 0 && (
+        <>
+          <h3>已生效的建议书（{state.directives.length}）</h3>
+          <ul className="list">
+            {state.directives.map((d) => (
+              <li key={d.id}>
+                <span className={`pill ${d.kind === 'hold' ? 'bad' : d.kind === 'resume' ? 'ok' : 'role'}`}>{d.kind}</span>
+                <span>{d.text}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {/*
+        建议书的执行情况必须展示出来。
+        真人写下的约束天然分两类：能机械校验的（「不得引入 X」）与只能作为指令的
+        （「代码风格要简洁」）。把第二类伪装成第一类是危险的 ——
+        用户会以为约束正在被执行。见 docs/05 §2.2。
+      */}
+      {state.directiveEnforcement && (
+        <>
+          {state.directiveEnforcement.enforced.length > 0 && (
+            <>
+              <h3>已被机械强制校验（{state.directiveEnforcement.enforced.length}）</h3>
+              <ul className="list">
+                {state.directiveEnforcement.enforced.map((e, i) => (
+                  <li key={i}>
+                    <span className="pill ok">强制</span>
+                    <span>{e.raw}</span>
+                    <span className="muted small">
+                      → {e.rule}：{e.values.join('、')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {state.directiveEnforcement.advisory.length > 0 && (
+            <>
+              <h3 className="warn-title">仅作为角色指令（无法机械校验）</h3>
+              <ul className="list">
+                {state.directiveEnforcement.advisory.map((a, i) => (
+                  <li key={i}>
+                    <span className="pill warn">不强制</span>
+                    <span>{a.raw}</span>
+                    <span className="muted small">{a.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+
+      {state.escalations.length > 0 && (
+        <>
+          <h3 className="warn-title">待裁决收件箱（{state.escalations.length}）</h3>
+          <div className="muted small">
+            这些争议机器裁决不了（需要人回答的具体问题），或者圆桌两轮未达成有效决议。
+            <br />
+            可用动作：<b>resume</b>（强制推进）· <b>override</b>（推翻某角色决定）· <b>let-it-pass</b>（明知有争议仍继续 —— 会记为技术债，而不是「已通过」）。
+          </div>
+          <ul className="list">
+            {state.escalations.map((e) => (
+              <li key={e.bundleId}>
+                <code>{e.bundleId}</code>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}

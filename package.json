@@ -1,0 +1,29 @@
+{
+  "name": "agentforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "多智能体协作软件开发系统：五角色 + 机械裁判 + 多层锚点防幻觉",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "demo": "node packages/orchestrator/src/cli.ts",
+    "demo:e2e": "node packages/orchestrator/src/cli-e2e.ts",
+    "verify:p6": "node scripts/verify-real-app.ts",
+    "bench": "node scripts/anchor-benchmark.ts",
+    "bench:verbose": "node scripts/anchor-benchmark.ts --verbose",
+    "console": "node packages/server/src/cli.ts",
+    "web:install": "cd apps/web && npm install",
+    "web:build": "cd apps/web && npm run build",
+    "init": "node packages/orchestrator/src/cli-run.ts init",
+    "run": "node packages/orchestrator/src/cli-run.ts",
+    "replay": "node packages/orchestrator/src/cli-run.ts --replay"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "comment": "apps/web 刻意不列入 workspace：控制台需要 React/Vite 工具链，而引擎（packages/*）保持零依赖、node 直接可跑。两者独立安装、互不影响。"
+}

@@ -1,0 +1,30 @@
+node_modules/
+.probe/
+workspace/*
+!workspace/.gitkeep
+runs/*
+!runs/.gitkeep
+*.log
+.DS_Store
+dist/
+# 控制台的 npm 缓存刻意放在工作区内（默认位置在工作区外，会被文件沙箱拦下）
+apps/web/.npm-cache/
+apps/web/dist/
+.npm-cache/
+
+# 凭据：绝不提交。放在工作区里也必须被忽略 ——
+# 「差点把密钥提交上去」这种事只能靠规则挡住，不能靠记性。
+.git-token
+.git-credentials
+.askpass.*
+*.pem
+
+# 实现笔记（踩坑记录）：刻意不发布。
+#
+# 它记录的是开发过程中的失败、误判和被推翻的结论（例如「我用一次失败的探测
+# 得出了一个错误的全局结论」这种）。这类内容对内部开发最有价值，
+# 但作为公开文档没有意义，而且容易让读者把「当时的错误结论」当成现在的结论。
+#
+# 注意：gitignore 只能挡住**未来**的跟踪。它曾经被提交过一次，
+# 所以真正下架必须配合历史重写（那次已经做了）。
+docs/07-implementation-notes.md
