@@ -8,7 +8,7 @@ import { DecisionLog, EventBus, silentLogger, type ForgeEvent, type ProjectProfi
 import { MockProvider } from '../../llm/src/index.ts';
 import { createRoleRunners } from '../../roles/src/index.ts';
 import { SemanticVerifier } from '../../roles/src/verify.ts';
-import { Orchestrator } from '../src/orchestrator.ts';
+import { Orchestrator, requirementStatusForVerdict } from '../src/orchestrator.ts';
 
 // ════════════════════════════════════════════════════════════════
 // 项目脚手架（模拟一个真实的 TS 项目：package.json + 已安装依赖）
@@ -1087,6 +1087,60 @@ test('【关键】验证器的上下文必须包含机械检查事实（否则�
     );
   } finally {
     await cleanup();
+  }
+});
+
+test('【关键】锚点运行记录不得跨 Gate 互相覆盖（runId 必须每个 Gate 唯一）', async () => {
+  // 真实 LLM 实测发现的缺陷（docs/07 §L14）。
+  //
+  // createAnchorContext 内部有一个从 1 开始的计数器，runId 形如 `${prefix}-001`。
+  // 原来 prefix 就是 this.runId，而每次 Gate 都会新建一个 ctx ——
+  // 于是**每个 Gate 都从 -001 重新编号**，`anchors/${runId}.json` 后写覆盖先写。
+  //
+  // 实测后果：跑了 7 个 Gate 的运行，anchors/ 目录里只剩**最后一个 Gate** 的
+  // 10 条记录，前面 6 次的锚点结论全部丢失。两个真问题：
+  //   1. 审计历史没了（事后无法回答「这个失败是第几轮出现的」）
+  //   2. 更严重：`{kind:'anchor', runId}` 形式的证据引用会解析到**另一个 Gate
+  //      的结果**，而 B1/B3 都要核验这种引用 —— 等于用错误的记录为判定背书
+  const { root, orch, cleanup } = await setup(happyScript());
+  try {
+    await orch.run();
+
+    const dir = join(root, 'anchors');
+    const files = (await readdir(dir)) as string[];
+    const runs = await Promise.all(
+      files.map(async (f) => JSON.parse(await readFile(join(dir, f), 'utf8')) as { anchorId: string; runId: string }),
+    );
+
+    // 每个 Gate 的锚点都要留下记录：INTAKE 0 + PLANNING 1 + CONTRACTING 2 + BUILDING 6 + REVIEW 10 = 19
+    assert.ok(
+      runs.length >= 15,
+      `应当保留所有 Gate 的锚点记录（预期 ~19 条），实际只剩 ${runs.length} 条 —— 说明后面的 Gate 覆盖了前面的`,
+    );
+
+    const ids = runs.map((r) => r.runId);
+    assert.equal(new Set(ids).size, ids.length, `runId 必须唯一，实际有重复：${ids.filter((v, i) => ids.indexOf(v) !== i).join(', ')}`);
+
+    // 同一次运行里，同一个锚点应当出现多次（不同 Gate 各一次）
+    const a5Count = runs.filter((r) => r.anchorId === 'A5').length;
+    assert.ok(a5Count >= 2, `A5 在 BUILDING 与 REVIEW 都会跑，应当有 ≥2 条记录，实际 ${a5Count} 条`);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('需求状态映射必须是全量映射（not-met 不得被漏掉，否则过期状态清不掉）', () => {
+  // 踩过的「少报」坑（docs/07 §L14）：最初把 not-met 排除在外，
+  // 于是上一轮写的 unverified 永远不会被重置 ——
+  // REVIEW 第一次判 uncertain → 写 unverified；重试后第二次判 not-met → 被过滤掉不写
+  // → 状态停在 unverified。一个「已确认未达成」的需求被显示成「查过但说不清」。
+  assert.equal(requirementStatusForVerdict('met'), 'met');
+  assert.equal(requirementStatusForVerdict('not-met'), 'open', 'not-met 必须写回 open，否则清不掉过期的 unverified');
+  assert.equal(requirementStatusForVerdict('uncertain'), 'unverified');
+  assert.equal(requirementStatusForVerdict('unverified'), 'unverified');
+  // 四个 verdict 都有归宿，没有「不处理」的分支
+  for (const v of ['met', 'not-met', 'uncertain', 'unverified'] as const) {
+    assert.ok(['met', 'open', 'unverified'].includes(requirementStatusForVerdict(v)));
   }
 });
 

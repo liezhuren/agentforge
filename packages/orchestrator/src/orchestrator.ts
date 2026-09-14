@@ -130,6 +130,25 @@ export type RunSummary = {
   requirementStatuses: Array<{ id: string; status: string }>;
 };
 
+/**
+ * B1 的逐条判定 → 需求验收状态的映射。
+ *
+ * 抽成纯函数是为了能直接单测 —— 这里踩过一个「少报」的坑（docs/07 §L14）：
+ * 最初把 `not-met` 排除在外（理由是想「保持 open 不变」），结果**上一轮写下的
+ * `unverified` 永远不会被重置** —— REVIEW 第一次判 uncertain 写成 unverified，
+ * 重试后第二次判 not-met 被过滤掉不写，状态就停在 unverified。
+ * 一个「已确认未达成」的需求于是被显示成「查过但说不清」。
+ *
+ * 所以这是**全量映射**，四个 verdict 各有归宿，没有「不处理」的分支。
+ */
+export function requirementStatusForVerdict(
+  verdict: 'met' | 'not-met' | 'uncertain' | 'unverified',
+): 'met' | 'open' | 'unverified' {
+  if (verdict === 'met') return 'met';
+  if (verdict === 'not-met') return 'open';
+  return 'unverified';
+}
+
 export class Orchestrator {
   private o: OrchestratorOptions;
   private store: ArtifactStore;
@@ -171,6 +190,14 @@ export class Orchestrator {
   private traces: StageTrace[] = [];
   private cycle = 0;
   private runId = `run-${randomUUID().slice(0, 8)}`;
+  /**
+   * 锚点上下文的序号。保证**每个 Gate 的锚点运行记录 runId 唯一**。
+   *
+   * 不加它的话，`createAnchorContext` 内部那个从 1 开始的计数器会让每个 Gate
+   * 都产出 `-001`…`-010`，于是后一个 Gate 的记录**覆盖**前一个 Gate 的。
+   * 详见 makeCtx 里的说明。
+   */
+  private ctxSeq = 0;
 
   constructor(opts: OrchestratorOptions) {
     this.o = opts;
@@ -1089,7 +1116,21 @@ export class Orchestrator {
       logger: this.logger.child('anchor'),
       offline: this.o.offline ?? true,
       proposals,
-      runPrefix: this.runId,
+      /**
+       * runPrefix 必须**每个 ctx 唯一**，否则锚点运行记录会跨 Gate 互相覆盖。
+       *
+       * 踩过的坑（docs/07 §L14）：`createAnchorContext` 内部有一个从 1 开始的计数器，
+       * runId 形如 `${prefix}-001`。原来 prefix 就是 this.runId，
+       * 而每次 Gate 都会新建一个 ctx —— 于是**每个 Gate 都从 -001 重新编号**，
+       * `anchors/${runId}.json` 后写覆盖先写。
+       *
+       * 实测后果：跑了 7 个 Gate 的运行，anchors/ 目录里只剩**最后一个 Gate**
+       * 的 10 条记录，前面 6 次的锚点结论全部丢失。这会带来两个真问题：
+       *   1. 审计历史没了 —— 事后无法回答「这个失败是第几轮出现的」
+       *   2. 更严重：`{kind:'anchor', runId}` 形式的证据引用会解析到**另一个 Gate
+       *      的结果**（B1/B3 都要核验这种引用），等于用错误的记录为判定背书
+       */
+      runPrefix: `${this.runId}-c${++this.ctxSeq}`,
       emit: (e) => this.bus.emit(e),
     });
   }
@@ -1240,9 +1281,12 @@ export class Orchestrator {
     const outcomes = meta?.outcomes ?? [];
     if (outcomes.length === 0) return;
 
-    const updates = outcomes
-      .filter((o) => o.verdict === 'met' || o.verdict === 'uncertain' || o.verdict === 'unverified')
-      .map((o) => ({ id: o.requirementId, status: o.verdict === 'met' ? ('met' as const) : ('unverified' as const) }));
+    const updates = outcomes.map((o) => ({
+      id: o.requirementId,
+      // 全量映射，**不能过滤任何分支** —— 理由见 requirementStatusForVerdict 的说明：
+      // 漏掉 not-met 会让上一轮写的 unverified 永远清不掉（少报一个确定的失败）。
+      status: requirementStatusForVerdict(o.verdict),
+    }));
 
     if (updates.length === 0) return;
 
