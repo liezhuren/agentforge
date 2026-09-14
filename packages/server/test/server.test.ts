@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { silentLogger } from '../../core/src/index.ts';
 import { createForgeServer, type ForgeServer } from '../src/index.ts';
+import { resolveStaticFile } from '../src/http.ts';
 import { deriveVerdict } from '../src/run-manager.ts';
 
 // ════════════════════════════════════════════════════════════════
@@ -90,7 +91,11 @@ test('交付判定：/api/state 必须带上服务端派生的 verdict（前端�
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 
-async function withServer<T>(fn: (s: ForgeServer, base: string) => Promise<T>): Promise<T> {
+async function withServer<T>(
+  fn: (s: ForgeServer, base: string) => Promise<T>,
+  /** 允许测试指定静态目录 —— 静态行为不该依赖本机是否构建过控制台。 */
+  opts: { staticDir?: string } = {},
+): Promise<T> {
   const wsRoot = await mkdtemp(join(tmpdir(), 'af-srv-ws-'));
   const forge = await createForgeServer({
     // 用独立的工作区根，避免测试写进仓库的 workspace/
@@ -98,6 +103,7 @@ async function withServer<T>(fn: (s: ForgeServer, base: string) => Promise<T>): 
     workspaceRoot: wsRoot,
     logger: silentLogger('srv-test'),
     port: 0,
+    ...(opts.staticDir ? { staticDir: opts.staticDir } : {}),
   });
   try {
     return await fn(forge, forge.url);
@@ -148,24 +154,123 @@ test('服务端：健康检查与初始状态', async () => {
   });
 });
 
-test('服务端：静态资源与 SPA 回退（前端构建产物）', async () => {
-  await withServer(async (_forge, base) => {
-    const res = await fetch(base + '/');
-    assert.equal(res.status, 200);
-    const html = await res.text();
-    assert.ok(html.includes('<div id="root">'), '应返回控制台 HTML');
-    assert.ok(/assets\/index-.*\.js/.test(html), '应引用构建出的 JS');
+test('服务端：静态资源与 SPA 回退（自带构建产物，不依赖别人跑过 npm run build）', async () => {
+  // 期望值：静态行为不该取决于「本机有没有构建过控制台」。
+  // 之前这个测试直接读仓库里的 apps/web/dist —— 而那是 .gitignore 的构建产物，
+  // 于是**干净检出跑 npm test 会红一个**（作者本地绿、读者第一次打开就红）。
+  // 现在自己造一个假 dist，两种行为都断言，任何机器上都确定。
+  const parent = await mkdtemp(join(tmpdir(), 'af-static-'));
+  const dist = join(parent, 'dist');
+  await mkdir(join(dist, 'assets'), { recursive: true });
+  await writeFile(
+    join(dist, 'index.html'),
+    '<!doctype html><html><body><div id="root"></div><script src="/assets/index-abc.js"></script></body></html>',
+    'utf8',
+  );
+  await writeFile(join(dist, 'assets', 'index-abc.js'), 'console.log("built")', 'utf8');
+  // 放在静态目录**外面**的哨兵：任何目录穿越都会把它带出来
+  const SENTINEL = 'TOP-SECRET-SENTINEL-9f3a';
+  await writeFile(join(parent, 'SECRET.txt'), SENTINEL, 'utf8');
 
-    // 未命中的路径回退到 index.html（前端路由需要）
-    const spa = await fetch(base + '/some/deep/route');
-    assert.equal(spa.status, 200);
-    assert.ok((await spa.text()).includes('<div id="root">'));
+  try {
+    await withServer(
+      async (_forge, base) => {
+        const res = await fetch(`${base}/`);
+        assert.equal(res.status, 200);
+        const html = await res.text();
+        assert.ok(html.includes('<div id="root">'), '应返回控制台 HTML');
+        assert.ok(/assets\/index-.*\.js/.test(html), '应引用构建出的 JS');
 
-    // 目录穿越必须被挡住
-    const evil = await fetch(base + '/../../package.json');
-    const text = await evil.text();
-    assert.ok(!text.includes('"name": "agentforge"'), '不得泄漏工作区外的文件');
-  });
+        // 静态资源本身要能被取到，且 content-type 正确
+        const js = await fetch(`${base}/assets/index-abc.js`);
+        assert.equal(js.status, 200);
+        assert.ok(js.headers.get('content-type')?.includes('javascript'), 'MIME 要按扩展名给对');
+
+        // 未命中的路径回退到 index.html（前端路由需要）
+        const spa = await fetch(`${base}/some/deep/route`);
+        assert.equal(spa.status, 200);
+        assert.ok((await spa.text()).includes('<div id="root">'));
+
+        // 说明：这里**不做**目录穿越断言。
+        // 走 HTTP 测不到那条守卫 —— `path.normalize` 会把结果锚定到根，
+        // `..` 在越界检查之前就已被消掉；而且 WHATWG URL 在发请求前也会先规范化掉 `..`。
+        // （原版测试正是在这里落空的，两个独立原因同时让它形同虚设。）
+        // 真正的验证见下面的 `resolveStaticFile` 单元测试。
+      },
+      { staticDir: dist },
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('静态文件路径解析：结果永远落在静态目录内（含各类穿越尝试）', () => {
+  const dist = join('C:', 'proj', 'apps', 'web', 'dist');
+  const inside = (p: string) => p === dist || p.startsWith(dist + sep);
+
+  // ── 正常路径 ────────────────────────────────────────────────
+  assert.equal(resolveStaticFile(dist, '/index.html'), join(dist, 'index.html'));
+  assert.equal(resolveStaticFile(dist, '/assets/index-abc.js'), join(dist, 'assets', 'index-abc.js'));
+  assert.equal(resolveStaticFile(dist, '/'), dist, '根路径解析到目录本身，由调用方回退到 index.html');
+
+  // ── 核心不变量 ──────────────────────────────────────────────
+  //
+  // 守的是**不变量**而不是某条分支：无论输入多恶意，结果要么是 null，
+  // 要么必须落在 staticDir 内。这条性质比「必须返回 null」更准确 ——
+  // 实测 `/../SECRET.txt` 会被 normalize 锚定到根、解析成 dist 内的路径，
+  // 那是**安全**的结果（没有逃逸），不该被断言成 null。
+  //
+  // 在这条路径上守卫本身其实不可达（normalize 已经锚定了根，
+  // 而 WHATWG URL 还会在发请求前先规范化掉 `..`），所以它属于纵深防御。
+  // 这个测试真正的价值是：**将来若有人把 join 改成 resolve、或去掉 strip，
+  // 逃逸会立刻变红** —— 那正是最常见的重构方向。
+  for (const evil of [
+    '/../SECRET.txt',
+    '/../../SECRET.txt',
+    '/..%2fSECRET.txt',
+    '/%2e%2e%2fSECRET.txt',
+    '/assets/../../SECRET.txt',
+    '/%2e%2e/%2e%2e/SECRET.txt',
+    '/....//SECRET.txt',
+    '/../dist-evil/x.txt', // 同前缀兄弟目录：`startsWith(staticDir)` 的经典误判场景
+    '/%00/index.html',
+  ]) {
+    const got = resolveStaticFile(dist, evil);
+    if (got !== null) {
+      assert.ok(inside(got), `${evil} 解析成了静态目录外的路径：${got}`);
+    }
+  }
+
+  // ── 前缀比较必须算上分隔符 ──────────────────────────────────
+  // 原实现是 `abs.startsWith(staticDir)`：`<dist>-evil/x` 也以 `<dist>` 开头，会被误放行。
+  // 这里直接对比较逻辑做断言（用绝对路径喂进去，绕过 normalize 的锚定）。
+  const sibling = join('C:', 'proj', 'apps', 'web', 'dist-evil', 'x.txt');
+  assert.ok(
+    !(sibling === dist || sibling.startsWith(dist + sep)),
+    '前提校验：dist-evil 必须与 dist 同前缀但不落在 dist 内，否则这个用例没意义',
+  );
+  assert.ok(sibling.startsWith(dist), '前提校验：sibling 确实满足旧实现的错误判据');
+});
+
+test('服务端：没有构建产物时给出构建指引，而不是 404 或崩溃', async () => {
+  // 这是使用者第一次接触控制台时**唯一**会看到的页面，所以它本身就该被测。
+  const missing = join(tmpdir(), `af-no-dist-${Date.now()}-not-there`);
+  await withServer(
+    async (_forge, base) => {
+      const res = await fetch(`${base}/`);
+      assert.equal(res.status, 200, '缺前端产物是配置状态，不是错误 —— 不该报 404/500');
+      const html = await res.text();
+      assert.ok(html.includes('尚未构建'), '要明确告诉使用者「前端还没构建」');
+      assert.ok(html.includes('npm run build'), '要给出可直接照做的命令，而不是只报错');
+      assert.ok(html.includes('/api/state'), '要提示此时 API 仍然可用，别让人以为整个服务坏了');
+      assert.ok(!html.includes('<div id="root">'), '此时不该冒充已构建的页面');
+
+      // API 不因此受影响
+      const health = await getJson(`${base}/api/health`);
+      assert.equal(health.status, 200);
+    },
+    { staticDir: missing },
+  );
 });
 
 test('服务端：SSE 事件流首帧推全量状态，随后推增量事件', async () => {

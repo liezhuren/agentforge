@@ -13,7 +13,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { AddressInfo } from 'node:net';
 
 import { silentLogger, type Logger } from '../../core/src/index.ts';
@@ -52,6 +52,28 @@ export type ForgeServer = {
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * 把 URL 路径解析成静态目录下的真实文件路径；越界一律返回 null。
+ *
+ * 为什么抽成纯函数（这处有个值得记的发现）：
+ * 这条守卫**走 HTTP 测不到**。`path.normalize` 会把结果锚定到根，
+ * 所以 `..` 在到达越界检查之前就已经被消掉了 ——
+ * 原来的测试写 `fetch(base + '/../../package.json')` 来「验证防穿越」，
+ * 那其实**什么都没验**：一是 WHATWG URL 在发请求前就把 `..` 规范化掉了，
+ * 二是就算真发到服务端，normalize 也会消掉它。同一个测试里两个独立原因导致它落空。
+ *
+ * 所以真正的验证只能在这一层：直接喂恶意输入给这个函数。
+ * （顺带修掉一个潜在缺陷：原判断是 `file.startsWith(staticDir)`，
+ *  兄弟目录 `/a/dist-evil` 也以 `/a/dist` 开头，会被误放行。现在按「目录 + 分隔符」比较。）
+ */
+export function resolveStaticFile(staticDir: string, urlPath: string): string | null {
+  const rel = normalize(decodeURIComponent(urlPath)).replace(/^[/\\]+/, '');
+  const abs = join(staticDir, rel);
+  const root = staticDir.endsWith(sep) ? staticDir : staticDir + sep;
+  if (abs === staticDir) return abs;
+  return abs.startsWith(root) ? abs : null;
+}
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -276,14 +298,13 @@ export async function createForgeServer(opts: ServerOptions): Promise<ForgeServe
       res.end(notBuiltPage(staticDir));
       return;
     }
-    // 防目录穿越
-    const rel = normalize(decodeURIComponent(path)).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
-    let file = join(staticDir, rel);
-    if (!file.startsWith(staticDir)) {
+    const resolved = resolveStaticFile(staticDir, path);
+    if (resolved === null) {
       res.writeHead(403);
       res.end('forbidden');
       return;
     }
+    let file = resolved;
     try {
       const st = await stat(file);
       if (st.isDirectory()) file = join(file, 'index.html');

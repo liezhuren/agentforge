@@ -1,0 +1,73 @@
+# 在**干净机器**上验证这个仓库。
+#
+# 为什么必须有这一条（这不是形式主义）：
+#
+# 这个项目里曾经同时存在三个「作者本地绿、读者第一次打开就红」的缺陷：
+#   1. `npm test` 有一个测试依赖 `apps/web/dist`（gitignore 的构建产物）→ 全新检出必红一个
+#   2. README 写着「192 个测试」，实际已经 256 个
+#   3. `npm run typecheck` 是坏脚本：没有 devDependencies、tsconfig 也没声明 types:["node"]，
+#      新机器上连 tsc 都找不到。**一个永远报错的检查等于没有检查** ——
+#      引擎代码因此从未被类型检查过，修好之后第一次运行报出 41 个类型错误。
+#
+# 它们的共同点是：只有在「别人的机器上」才会暴露，而作者本地永远看不到。
+# CI 是唯一能自动发现这一类的机制。
+#
+# 所以本工作流的重点不是「跑测试」，而是**在没有 node_modules、没有构建产物的前提下跑**：
+# 先只跑零依赖路径（测试 + 靶场），确认引擎真的零依赖；
+# 再单独安装依赖跑类型检查，确认那条声明可执行的检查确实是绿的。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ── 零依赖路径：不需要任何 npm install ────────────────────────────
+  zero-dependency:
+    name: 零依赖（测试 + 靶场 + 离线演示）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 这一步刻意**不跑 npm install** —— 引擎是零运行时依赖的，
+      # 而「零依赖」这句话只有在这里才被真正检验。
+      - name: 确认工作区里没有 node_modules
+        run: |
+          if [ -d node_modules ]; then
+            echo "::error::零依赖路径下不应存在 node_modules"
+            exit 1
+          fi
+
+      - name: 全部测试（258 个）
+        run: node scripts/run-tests.ts
+
+      - name: 幻觉靶场（42 样本，要求 0 误报 0 漏报）
+        run: node scripts/anchor-benchmark.ts
+
+      - name: 离线端到端演示（四个场景）
+        run: node packages/orchestrator/src/cli-e2e.ts
+
+  # ── 类型检查：唯一需要安装依赖的检查 ─────────────────────────────
+  typecheck:
+    name: 类型检查（引擎 + 脚本）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm install
+
+      # 这里检查的是 packages/** 与 scripts/**（不含 apps/web —— 它是独立工程，
+      # 有自己的 tsconfig 与依赖，见根 tsconfig.json 里的说明）。
+      - run: npm run typecheck

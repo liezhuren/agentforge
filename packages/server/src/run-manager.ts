@@ -58,7 +58,19 @@ export type RunRuntime = {
   probes: ProbeOutcome[];
   models: Record<string, string>;
   warnings: string[];
-  budget: BudgetSnapshot | null;
+  /**
+   * 注意这里**没有** `budget` 字段。
+   *
+   * 它曾经有：类型声明是 `budget: BudgetSnapshot | null`，赋值处写 `built.budget` ——
+   * 而两个构造函数（buildDemo / buildFromConfig）返回的都是 `budgetTracker`，
+   * **从来没有 `budget` 这个属性**。所以那个字段永远是 `undefined`，而且没人读它：
+   * 界面上的预算走的是 `budgetNow()`（读 `this.budgetTracker`），那条路径是对的。
+   *
+   * 也就是说这是一处「类型上存在、运行时永远是 undefined、且只写不读」的字段。
+   * 它是被 `npm run typecheck` 修好之后**第一个**暴露出来的东西 ——
+   * 在同一批里还查到 `GateResult.at` 从未被赋值、以及 `package.json` 的
+   * `scripts.test` 命令被产出悄悄换掉。见 docs/07 §N。
+   */
   recorderPath: string | null;
 };
 
@@ -369,7 +381,6 @@ export class RunManager {
       probes: built.probes,
       models: built.models,
       warnings: built.warnings,
-      budget: built.budget,
       recorderPath: built.recorderPath,
     };
 
