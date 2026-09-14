@@ -113,6 +113,26 @@ function renderConventions(ctx: RoleContext): string {
   //
   // 模型的写法本身不算错（导出工厂函数便于测试），错的是**没人告诉它入口必须自启**。
   // 这是 §L5/§L7 的同一类问题：锚点判得对，但根因是约定没传达。
+  // ── 项目契约文件（真实 LLM 实测补上的，见 docs/HANDOFF.md §8.1）──────
+  //
+  // 第 12 轮真实运行里，backend 角色在 CodeModule 里附了一份**自己写的
+  // package.json 与 tsconfig.json**，把项目契约整个换掉了：
+  // 删掉 agentforge.healthUrl（A6 于是静默 SKIPPED）、删掉 environmentNotes、
+  // 把测试命令换成在本环境跑不通的那条，并用 tsconfig 的 exclude 把测试排除出类型检查。
+  //
+  // 模型的动机几乎肯定是好的（「帮项目补上 package.json」是很常见的做法），
+  // 但在这个系统里它是**被验证者改动了验证基准**。
+  // 引擎侧已经有硬性阻断（core/src/projectcontract.ts + A8 锚点 + 编排器的两个写盘入口），
+  // 这里补上事前的告知 —— 因为「先告诉它，再拦它」比「拦下来再让它返工」便宜得多。
+  // 这是 §L5/§L7/§L8 那条规律的第四次应用：**约定没传达，失败就会长得像能力不足。**
+  const contractFiles = ['package.json', ...(ctx.profile.protectedFiles ?? [])];
+  lines.push(
+    `**不要在你的产出里附带项目契约文件**（${contractFiles.join('、')} 等）。` +
+      '它们已经存在、由项目方声明，是编译/测试/运行检查的基准 —— ' +
+      '引擎会保留项目原值并把它记为一次契约违规（A8 锚点 FAIL）。' +
+      '你只负责写自己范围内的源码文件；确实需要新增依赖或脚本时，在说明里提出，不要直接改写这些文件。',
+  );
+
   if (ctx.profile.run) {
     const r = ctx.profile.run;
     lines.push(`启动命令是 \`${r.cmd} ${r.args.join(' ')}\`，服务必须在该命令下真正启动并持续监听。`);

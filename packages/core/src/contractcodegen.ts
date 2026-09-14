@@ -18,6 +18,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ContractDoc } from './types.ts';
 import { stableStringify, sha256 } from './hash.ts';
+import { normalizeRelPath } from './projectcontract.ts';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -128,14 +129,49 @@ export function generateContractTypes(contract: ContractDoc): string {
   return lines.join('\n');
 }
 
-/** 把生成物写到契约声明的路径。 */
+/** 生成类型文件的落点非法（越出项目根，或指向受保护的验证基准文件）。 */
+export class GeneratedTypesPathError extends Error {
+  readonly relPath: string;
+  constructor(relPath: string, reason: string) {
+    super(`契约声明的生成类型路径不可写：${relPath}（${reason}）`);
+    this.name = 'GeneratedTypesPathError';
+    this.relPath = relPath;
+  }
+}
+
+/**
+ * 把生成物写到契约声明的路径。
+ *
+ * ⚠️ **这个路径是 PM 角色的 Contract 工件自己声明的**，也就是「产出的内容决定写盘位置」。
+ * 因此它和 `materializeFiles` 属于同一个信任边界，必须有同样的守卫 ——
+ * 不守的话，PM 只要把 `generatedTypesPath` 写成 `package.json`，
+ * 引擎就会拿生成的 TypeScript **覆盖掉项目契约**，
+ * 于是 A4/A5/A6 一起变成 SKIPPED 或跑错命令。
+ *
+ * （这正是 docs/07 §L13 那条教训的应用：修一条路径时，
+ *  必须列出「同一件事还有哪些入口」。当年漏掉缓存命中那条 early return，
+ *  让「反复跑同一个项目」这个最常规的用法第二次起每次都 400。）
+ */
 export async function writeContractTypes(
   projectRoot: string,
   contract: ContractDoc,
+  opts: { forbiddenPaths?: string[] } = {},
 ): Promise<{ path: string; bytes: number }> {
-  const abs = join(projectRoot, contract.generatedTypesPath);
+  const rel = normalizeRelPath(contract.generatedTypesPath);
+  if (rel === null) {
+    throw new GeneratedTypesPathError(contract.generatedTypesPath, '路径越出项目工作区或不是合法的相对路径');
+  }
+  const forbidden = new Set((opts.forbiddenPaths ?? []).map((p) => normalizeRelPath(p)).filter((p): p is string => p !== null));
+  if (forbidden.has(rel)) {
+    throw new GeneratedTypesPathError(
+      contract.generatedTypesPath,
+      '它属于受保护的验证基准文件，产出不得改写',
+    );
+  }
+
+  const abs = join(projectRoot, rel);
   const text = generateContractTypes(contract);
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, text, 'utf8');
-  return { path: contract.generatedTypesPath, bytes: Buffer.byteLength(text, 'utf8') };
+  return { path: rel, bytes: Buffer.byteLength(text, 'utf8') };
 }

@@ -1,7 +1,7 @@
 # 09 · 自举验证实地报告（P6）
 
 > 本文件由 `scripts/verify-real-app.ts` 自动生成 —— 数字来自实际运行，不是手写。
-> 生成时间：2026-09-13T14:18:54.358Z
+> 生成时间：2026-09-14T16:59:12.842Z
 
 ## 验证目标
 
@@ -23,7 +23,7 @@
 - 交付状态：`complete`
 - 最终阶段：`DELIVERED`
 - Gate 次数：5
-- 耗时：2775 ms
+- 耗时：2600 ms
 - 工单：0 张；技术债：0 条
 
 ### 阶段轨迹
@@ -40,15 +40,15 @@
 
 | 锚点 | 判定 | 方法 | 权威度 | 耗时 |
 |---|---|---|---|---|
-| A1 | `WARN` | npm-name-rules + typo-distance + local-install + registry | approximate | 5 ms |
+| A1 | `WARN` | npm-name-rules + typo-distance + local-install + registry | approximate | 6 ms |
 | A2 | `PASS` | none-needed | authoritative | 0 ms |
 | A3 | `PASS` | file-existence with extension candidates (relative to importing file) | authoritative | 4 ms |
-| A4 | `PASS` | structured diagnostics from npm run typecheck | authoritative | 714 ms |
-| A5 | `PASS` | structured counts from npm run test | authoritative | 467 ms |
-| A6 | `PASS` | spawn + HTTP probe http://127.0.0.1:39517/health | authoritative | 340 ms |
-| A7 | `PASS` | openapi-path coverage + generated-types existence + duplication heuristic | authoritative | 4 ms |
+| A4 | `PASS` | structured diagnostics from npm run typecheck | authoritative | 650 ms |
+| A5 | `PASS` | structured counts from npm run test | authoritative | 435 ms |
+| A6 | `PASS` | spawn + HTTP probe http://127.0.0.1:39517/health | authoritative | 336 ms |
+| A7 | `PASS` | openapi-path coverage + generated-types existence + duplication heuristic | authoritative | 3 ms |
 | B1 | `PASS` | llm-proposals + deterministic evidence verification | approximate | 1 ms |
-| B2 | `PASS` | deterministic coverage matrix (requirement → PRD → task → artifact → test) | authoritative | 0 ms |
+| B2 | `PASS` | deterministic coverage matrix (requirement → PRD → task → artifact → test) | authoritative | 1 ms |
 | B3 | `PASS` | deterministic evidence verification over host objections | authoritative | 0 ms |
 
 ### 主理人问责账本
@@ -69,7 +69,7 @@
 | 检查项 | 结果 | 证据 |
 |---|---|---|
 | 流水线交付 | ✅ | delivery=complete |
-| A 层七个锚点全部真实执行（无 SKIPPED） | ✅ | A1=WARN A2=PASS A3=PASS A4=PASS A5=PASS A6=PASS A7=PASS |
+| A 层八个锚点全部真实执行（无 SKIPPED） | ✅ | A1=WARN A2=PASS A3=PASS A4=PASS A5=PASS A6=PASS A7=PASS A8=PASS |
 | A 层无硬失败 | ✅ | 无 |
 | A6 运行时锚点真的启动了服务并探针成功 | ✅ | httpStatus=200 |
 | A5 测试锚点真的跑了测试并解析出通过数 | ✅ | passed=3 failed=0 |
@@ -99,9 +99,9 @@ exit=0
 > task-board@1.0.0 test
 > node tests/tasks.test.ts
 
-✔ R-001 创建任务：POST /api/tasks 返回 201 且带 id (28.1523ms)
-✔ R-002 列出任务：GET /api/tasks 返回 200 且包含已创建的任务 (8.6799ms)
-✔ 未知路径返回 404 (3.8253ms)
+✔ R-001 创建任务：POST /api/tasks 返回 201 且带 id (25.2682ms)
+✔ R-002 列出任务：GET /api/tasks 返回 200 且包含已创建的任务 (6.7043ms)
+✔ 未知路径返回 404 (2.5371ms)
 ℹ tests 3
 ℹ suites 0
 ℹ pass 3
@@ -109,12 +109,12 @@ exit=0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 45.4411
+ℹ duration_ms 37.7851
 ```
 
 ## 观察到的结论
 
-1. **A1–A7 全部真实执行，无一 SKIPPED。** 这一点值得强调：
+1. **A1–A8 全部真实执行，无一 SKIPPED。** 这一点值得强调：
    如果 typecheck/test/run 任一未配置，对应锚点会报 SKIPPED 而不是 PASS ——
    本报告里它们都是真的跑了（A4 真 tsc、A5 真测试、A6 真起服务探针）。
 2. **主理人只在 REVIEW 阶段被唤醒**，A 层有硬失败时不会被叫来复述编译器已经说清的话。

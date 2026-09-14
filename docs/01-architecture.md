@@ -26,7 +26,7 @@
         │                                       │
 ┌───────┴────────────┐              ┌───────────┴───────────────┐
 │ packages/roles     │              │ packages/anchors          │
-│ 五角色 prompt +    │              │ A1–A7 确定性检查器         │
+│ 五角色 prompt +    │              │ A1–A8 确定性检查器         │
 │ 输出 schema        │              │ B1–B3 语义锚(带证据核验)    │
 └───────┬────────────┘              └───────────┬───────────────┘
         │                                       │
@@ -94,7 +94,7 @@ type NextAction =
               → 调 LLM（schema 约束输出）
               → 解析 → schema 校验 → 失败则结构化重试（最多 N 次）
               → 发布 Artifact（带 contentHash）
-3. 锚点运行器: 对受影响的工件跑 A1–A7
+3. 锚点运行器: 对受影响的工件跑 A1–A8
               → 每个结果绑定 contentHash 写入 anchorChain
               → 任何 hash 变化使旧锚点 STALE
 4. Gate:
@@ -119,7 +119,7 @@ type NextAction =
 |---|---|---|
 | `core` | 领域模型（角色/工件/异议/账本/建议书）、工件存储、哈希链决策日志、事件总线、JSON Schema 定义与 TS 类型 | 不调 LLM、不做 IO 副作用决策 |
 | `llm` | Provider 抽象（OpenAI 兼容 / Ollama 等）、模型注册表、能力探测（strict json / tool calling）、重试与修复解析、token 成本预算、调用记录与回放 | 不含角色语义 |
-| `anchors` | A1–A7 检查器、B1–B3 语义锚（含证据核验器）、锚点注册表与依赖排序 | 不做编排决策 |
+| `anchors` | A1–A8 检查器、B1–B3 语义锚（含证据核验器）、锚点注册表与依赖排序 | 不做编排决策 |
 | `orchestrator` | 状态机、Gate、机械裁判、账本、派工调度、圆桌主持、死锁逃生 | **不含 LLM 调用** |
 | `roles` | 五角色的 system prompt、输出 schema、上下文装配策略 | 不做校验（交给 core schema） |
 | `server` | HTTP 命令接口 + WebSocket 事件流 | 不含业务逻辑 |

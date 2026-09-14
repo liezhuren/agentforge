@@ -3,7 +3,7 @@
  *
  * 这个脚本的验收逻辑刻意分成两段，而且第二段不依赖第一段的任何结论：
  *
- *   第 1 段 · 流水线：INTAKE → DELIVERED，跑完 A1–A7 七个真实锚点
+ *   第 1 段 · 流水线：INTAKE → DELIVERED，跑完 A1–A8 八个真实锚点
  *   第 2 段 · 独立验证：**绕开锚点系统**，直接对生成的产物做
  *             真编译 / 真测试 / 真启动 + 真 HTTP 请求
  *
@@ -176,9 +176,9 @@ async function main(): Promise<void> {
 
   check('流水线交付', summary.delivery === 'complete', `delivery=${summary.delivery}`);
 
-  const aLayer = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'].map((id) => allAnchors.get(id));
+  const aLayer = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8'].map((id) => allAnchors.get(id));
   check(
-    'A 层七个锚点全部真实执行（无 SKIPPED）',
+    'A 层八个锚点全部真实执行（无 SKIPPED）',
     aLayer.every((a) => a !== undefined && a.verdict !== 'SKIPPED'),
     aLayer.map((a) => `${a?.anchorId}=${a?.verdict}`).join(' '),
   );
@@ -458,7 +458,7 @@ async function writeReport(args: {
   lines.push('');
   lines.push('## 观察到的结论');
   lines.push('');
-  lines.push('1. **A1–A7 全部真实执行，无一 SKIPPED。** 这一点值得强调：');
+  lines.push('1. **A1–A8 全部真实执行，无一 SKIPPED。** 这一点值得强调：');
   lines.push('   如果 typecheck/test/run 任一未配置，对应锚点会报 SKIPPED 而不是 PASS ——');
   lines.push('   本报告里它们都是真的跑了（A4 真 tsc、A5 真测试、A6 真起服务探针）。');
   lines.push('2. **主理人只在 REVIEW 阶段被唤醒**，A 层有硬失败时不会被叫来复述编译器已经说清的话。');

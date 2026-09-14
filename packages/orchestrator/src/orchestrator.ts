@@ -33,7 +33,13 @@ import type {
 } from '../../core/src/types.ts';
 import { DEFAULT_HOST_POLICY } from '../../core/src/types.ts';
 import { ArtifactStore, materializeFiles } from '../../core/src/store.ts';
-import { writeContractTypes } from '../../core/src/contractcodegen.ts';
+import {
+  enforceProjectContract,
+  readProjectContract,
+  type ContractViolation,
+  type ProjectContract,
+} from '../../core/src/projectcontract.ts';
+import { writeContractTypes, GeneratedTypesPathError } from '../../core/src/contractcodegen.ts';
 import { DEFAULT_COMMAND_POLICY } from '../../core/src/exec.ts';
 import { DecisionLog } from '../../core/src/decisionlog.ts';
 import { EventBus as Bus } from '../../core/src/events.ts';
@@ -198,6 +204,17 @@ export class Orchestrator {
    * 详见 makeCtx 里的说明。
    */
   private ctxSeq = 0;
+  /**
+   * 项目契约：**验证基准**。在第一个角色产出之前固化，之后产出不得删除或改写它。
+   *
+   * 空对象是初始值（契约还没取快照）；`run()` 一开始就会把它填上。
+   * 取快照与强制执行的完整理由见 `core/src/projectcontract.ts` 的模块注释 ——
+   * 一句话：**被验证者不能修改验证基准**，否则「每个 PASS 都可追溯到一个
+   * 不依赖 LLM 的事实」这条不变量就只是措辞。
+   */
+  private contract: ProjectContract = { pkgExists: false, pkgKeys: {}, protectedFiles: {} };
+  /** 产出对契约的篡改尝试。已全部按「保留原值」处理，但必须报出来（A8）。 */
+  private contractViolations: ContractViolation[] = [];
 
   constructor(opts: OrchestratorOptions) {
     this.o = opts;
@@ -232,6 +249,28 @@ export class Orchestrator {
 
   async run(): Promise<RunSummary> {
     await this.ensureInit();
+
+    // ── 固化项目契约（验证基准）────────────────────────────────────
+    //
+    // 必须在**任何角色产出之前**做。晚一步，「基准」就成了产出自己写的东西 ——
+    // 那正是第 12 轮真实运行踩到的坑：后端角色附了一份自己写的 package.json，
+    // 把项目声明的 healthUrl 删掉，A6 于是静默 SKIPPED（docs/HANDOFF.md §8.1）。
+    try {
+      const snap = await readProjectContract(this.o.projectRoot);
+      this.contract = snap.contract;
+      for (const n of snap.notes) this.logger.info(n);
+      await this.log?.append('project.contract.snapshot', {
+        pkgExists: snap.contract.pkgExists,
+        pkgKeys: Object.keys(snap.contract.pkgKeys),
+        protectedFiles: Object.keys(snap.contract.protectedFiles),
+        notes: snap.notes,
+      });
+    } catch (err) {
+      // 取快照失败不是致命问题：A8 会因为拿不到基准而报 SKIPPED，
+      // 那是**诚实**的结果（未验证 ≠ 通过），好过让整个 run 崩掉。
+      this.logger.warn(`固化项目契约失败，本次运行不做契约保护：${(err as Error).message}`);
+    }
+
     this.bus.emit({
       t: 'run.started',
       runId: this.runId,
@@ -397,6 +436,20 @@ export class Orchestrator {
         if (gateOut.reason) trace.blockedReasons.push(gateOut.reason);
         trace.nextActions.push(describeAction(gateOut.nextAction));
         this.workOrders.push(...gateOut.workOrders);
+
+        /**
+         * 契约违规**按 Gate 结算**，用完即清。
+         *
+         * 为什么不累积：A8 要回答的是「本轮产出有没有篡改验证基准」，
+         * 和 A4「现在还有没有编译错误」是同一类问题 —— **看的是当下状态，不是历史**。
+         * 累积的话，一次没能生效的篡改尝试（文件其实原封不动）会让这个 run
+         * 从此永远 A8 FAIL，最后只能带债通过：那既冤枉了已经改好的角色，
+         * 也把「带债」这个信号稀释了。
+         *
+         * 清空的位置必须在这里：A8 是在上面的 `gate.evaluate` 里读的，
+         * 之后才轮到返工。返工若再犯，新违规会重新累积到下一轮 Gate。
+         */
+        this.contractViolations = [];
 
         // 把 A5 的真实执行结果固化成 TestReport 工件。
         //
@@ -624,13 +677,42 @@ export class Orchestrator {
           const contract = this.store.head('Contract');
           if (contract) {
             const contractDoc = contract.content as import('../../core/src/types.ts').ContractDoc;
-            const gen = await writeContractTypes(this.o.projectRoot, contractDoc);
-            this.logger.info(`已从冻结契约生成共享类型：${gen.path}（${gen.bytes} 字节）`);
-            await this.log?.append('artifact.frozen', {
-              contractId: contract.id,
-              frozenHash: contract.frozenHash,
-              generatedTypes: gen.path,
-            });
+            try {
+              const gen = await writeContractTypes(this.o.projectRoot, contractDoc, {
+                // 生成物写到哪，是 PM 的 Contract 工件说了算 —— 所以这里要挡住它指向验证基准。
+                forbiddenPaths: ['package.json', ...Object.keys(this.contract.protectedFiles)],
+              });
+              this.logger.info(`已从冻结契约生成共享类型：${gen.path}（${gen.bytes} 字节）`);
+              await this.log?.append('artifact.frozen', {
+                contractId: contract.id,
+                frozenHash: contract.frozenHash,
+                generatedTypes: gen.path,
+              });
+            } catch (err) {
+              if (!(err instanceof GeneratedTypesPathError)) throw err;
+              // 路径非法不是致命错误：不写盘，把这件事**如实记成一次契约违规**。
+              // A7 会因为「生成类型文件不存在」而 FAIL，工单会走正常流程派回 PM ——
+              // 也就是「不伪造、不静默、交给机械通道」。
+              const v: ContractViolation = {
+                code: 'path-escapes-project',
+                path: contractDoc.generatedTypesPath,
+                key: 'generatedTypesPath',
+                targetRole: 'pm',
+                artifactKind: 'Contract',
+                message:
+                  `契约声明的 generatedTypesPath（${contractDoc.generatedTypesPath}）不可写：` +
+                  `${err.message}。生成类型文件未落盘，A7 会因此 FAIL。`,
+              };
+              this.contractViolations.push(v);
+              this.logger.warn(v.message);
+              await this.log?.append('project.contract.violation', {
+                code: v.code,
+                path: v.path,
+                key: v.key,
+                targetRole: v.targetRole,
+                artifactKind: v.artifactKind,
+              });
+            }
           }
           break;
         }
@@ -726,6 +808,51 @@ export class Orchestrator {
     return { ok: true, proposals, hostReview };
   }
 
+  /**
+   * 把角色产出的文件清单按项目契约规整一遍，并记录篡改尝试。
+   *
+   * 必须在 `store.put` **之前**调用，让「工件里的内容」与「盘上的文件」始终一致 ——
+   * 否则锚点绑定在工件 hash 上，检查的却是另一个版本的文件，回归会变得无法解释。
+   *
+   * 违规不会被静默吞掉：每条都写进决策日志（可 verify 的哈希链）并累积给 A8 报 FAIL。
+   */
+  private applyProjectContract(
+    content: unknown,
+    producer: RoleId,
+    kind: import('../../core/src/types.ts').ArtifactKind,
+  ): unknown {
+    if (kind !== 'CodeModule' && kind !== 'TestSuite') return content;
+    const obj = content as { files?: Array<{ path: string; content: string }> } | null;
+    const files = obj?.files;
+    if (!Array.isArray(files) || files.length === 0) return content;
+
+    const res = enforceProjectContract({
+      contract: this.contract,
+      files,
+      producer,
+      artifactKind: kind,
+    });
+    // 收编可能扩展了契约（空白工作区里角色创建了 package.json / tsconfig.json）
+    this.contract = res.contract;
+
+    if (res.violations.length > 0) {
+      this.contractViolations.push(...res.violations);
+      for (const v of res.violations) {
+        this.logger.warn(`产出违反项目契约：${v.message}`);
+        void this.log?.append('project.contract.violation', {
+          code: v.code,
+          path: v.path,
+          ...(v.key ? { key: v.key } : {}),
+          ...(v.declared ? { declared: v.declared } : {}),
+          ...(v.attempted ? { attempted: v.attempted } : {}),
+          targetRole: v.targetRole,
+          artifactKind: v.artifactKind,
+        });
+      }
+    }
+    return { ...(obj as object), files: res.files };
+  }
+
   /** 调用角色产出一个工件。失败返回 false，**绝不伪造内容**。 */
   private async produce(
     role: RoleId,
@@ -740,18 +867,20 @@ export class Orchestrator {
       return false;
     }
 
+    const content = this.applyProjectContract(res.content, role, req.kind);
+
     try {
       const artifact = await this.store.put({
         kind: req.kind,
         producer: role,
-        content: res.content,
+        content,
         ...(req.scope ? { scope: req.scope } : {}),
         // 多例类工件（CodeModule/TestSuite）用 logicalId 区分不同任务
         ...(req.taskId && req.kind === 'CodeModule' ? { logicalId: `CodeModule-${req.taskId}-${req.scope}` } : {}),
       });
       // 代码类工件必须落到磁盘 —— 锚点检查的是真实文件，不是工件里的字符串
       if (req.kind === 'CodeModule' || req.kind === 'TestSuite') {
-        const files = (res.content as { files?: Array<{ path: string; content: string }> }).files ?? [];
+        const files = (content as { files?: Array<{ path: string; content: string }> }).files ?? [];
         if (files.length > 0) await materializeFiles(this.o.projectRoot, files);
       }
       this.bus.emit({ t: 'artifact.published', id: artifact.id, kind: artifact.kind, producer: artifact.producer });
@@ -790,18 +919,19 @@ export class Orchestrator {
         allOk = false;
         continue;
       }
+      const content = this.applyProjectContract(res.content, order.to, res.kind);
       try {
         // 同样的逻辑工件产生新版本（而不是新增一个逻辑工件）
         await this.store.put({
           kind: res.kind,
           producer: order.to,
-          content: res.content,
+          content,
           ...(order.target && typeof order.target !== 'string' && order.target.scope
             ? { scope: order.target.scope }
             : {}),
-          logicalId: inferLogicalId(res.kind, res.content, this.store),
+          logicalId: inferLogicalId(res.kind, content, this.store),
         });
-        const files = (res.content as { files?: Array<{ path: string; content: string }> }).files ?? [];
+        const files = (content as { files?: Array<{ path: string; content: string }> }).files ?? [];
         if (files.length > 0) await materializeFiles(this.o.projectRoot, files);
       } catch (err) {
         this.logger.warn(`工单 ${order.id} 的新版本被 store 拒绝：${(err as Error).message}`);
@@ -1131,6 +1261,18 @@ export class Orchestrator {
        *      的结果**（B1/B3 都要核验这种引用），等于用错误的记录为判定背书
        */
       runPrefix: `${this.runId}-c${++this.ctxSeq}`,
+      /**
+       * 把契约的当前状态交给 A8。
+       *
+       * `hasBaseline` 为 false 时 A8 会诚实报 SKIPPED（本次运行确实没有可保护的基准），
+       * 而不是伪造一个 PASS —— 一个「永远为绿的检查」比没有这个检查更糟。
+       */
+      contract: {
+        hasBaseline: this.contract.pkgExists || Object.keys(this.contract.protectedFiles).length > 0,
+        declaredPkgKeys: Object.keys(this.contract.pkgKeys),
+        protectedFiles: Object.keys(this.contract.protectedFiles),
+        violations: this.contractViolations,
+      },
       emit: (e) => this.bus.emit(e),
     });
   }

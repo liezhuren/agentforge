@@ -326,7 +326,7 @@ export async function deriveProfile(
      * 项目可以选择声明自己的约定，让锚点能真的执行、也让角色不再踩环境的坑。
      * 见 ProjectProfile.environmentNotes —— 环境约束由**项目**声明，不由引擎硬编码。
      */
-    agentforge?: { healthUrl?: string; environmentNotes?: string[] };
+    agentforge?: { healthUrl?: string; environmentNotes?: string[]; protectedFiles?: string[] };
   }>(join(workspace, 'package.json'));
 
   let typecheck: ProjectProfile['typecheck'] = null;
@@ -379,6 +379,11 @@ export async function deriveProfile(
       dependencyAllowlist: null,
       ...(pkg?.agentforge?.environmentNotes?.length
         ? { environmentNotes: pkg.agentforge.environmentNotes }
+        : {}),
+      // 项目声明的验证基准文件 → 一路带到「产出不得改写它」的强制执行与 A8 锚点，
+      // 也带进角色提示词（事前的告知比事后的返工便宜）。
+      ...(pkg?.agentforge?.protectedFiles?.length
+        ? { protectedFiles: pkg.agentforge.protectedFiles }
         : {}),
     },
     notes,

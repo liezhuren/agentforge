@@ -103,7 +103,7 @@ export const FREEZABLE_KINDS: ArtifactKind[] = ['Contract'];
  */
 export const SINGLETON_KINDS: ArtifactKind[] = ['Requirement', 'PRD', 'TaskGraph', 'Contract'];
 
-export type AnchorId = 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'B1' | 'B2' | 'B3';
+export type AnchorId = 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'A8' | 'B1' | 'B2' | 'B3';
 export type AnchorLayer = 'A' | 'B';
 
 export type AnchorVerdict =
@@ -637,6 +637,18 @@ export type ProjectProfile = {
    * 而它的目标恰恰是「用户接自己的 LLM、生成自己期望的项目」。
    */
   environmentNotes?: string[];
+  /**
+   * 项目声明的**验证基准文件**（除 `package.json` 与 `tsconfig.json` 之外）：
+   * 产出不得改写它们，改写会被 A8 锚点判 FAIL。
+   *
+   * 为什么需要项目声明这一项（docs/HANDOFF.md §8.1）：
+   * 「哪些文件构成验证基础设施」因项目而异 —— 本仓库预置的工作区里是
+   * `run-tests.mjs`（一个单进程测试运行器），换个项目可能是 `vitest.config.ts`、
+   * `jest.config.js`、`Makefile`。引擎硬编码一份清单只会在别人的项目里出错，
+   * 所以只硬编码两样真正普适的（`package.json` 与 `tsconfig.json`），
+   * 其余交给项目自己声明 —— 与 `environmentNotes` 同一个道理。
+   */
+  protectedFiles?: string[];
 };
 
 // ════════════════════════════════════════════════════════════════

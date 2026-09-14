@@ -13,22 +13,47 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256, stableStringify } from './hash.ts';
 
-export type DecisionKind =
-  | 'run.started'
-  | 'stage.entered'
-  | 'artifact.published'
-  | 'artifact.frozen'
-  | 'anchor.result'
-  | 'objection.raised'
-  | 'objection.arbitrated'
-  | 'ledger.updated'
-  | 'workorder.created'
-  | 'roundtable.closed'
-  | 'escalation.human'
-  | 'debt.recorded'
-  | 'directive.received'
-  | 'gate.evaluated'
-  | 'run.finished';
+/**
+ * 决策日志的事件类型。
+ *
+ * ⚠️ 必须是**运行时数组 + 类型派生**，不能只写成一个联合类型。
+ *
+ * 原因（一处真实踩到的坑）：引擎代码是零依赖 + Node 原生类型剥离直接运行的，
+ * **没有任何编译期类型检查**。所以「用了联合类型里没有的 kind」不会报错，
+ * 只会静默写进日志。实测审计时发现 3 个已经在用的 kind
+ * （`profile.refreshed` / `requirement.status.synced` / `testreport.published`）
+ * 根本不在这个列表里 —— 而日志照写不误，谁也没发现。
+ *
+ * 对一个建立在「先验证再相信」之上的项目来说，「自己的校验清单却没被校验」
+ * 是最不能接受的那种漏洞。所以这里把清单变成**可被程序读取的事实**，
+ * 并由 `packages/core/test/decisionlog-kinds.test.ts` 扫描全部源码里的
+ * `.append('<kind>')` 调用逐一比对 —— 漏一个就测试失败。
+ */
+export const DECISION_KINDS = [
+  'run.started',
+  'stage.entered',
+  'artifact.published',
+  'artifact.frozen',
+  'anchor.result',
+  'objection.raised',
+  'objection.arbitrated',
+  'ledger.updated',
+  'workorder.created',
+  'roundtable.closed',
+  'escalation.human',
+  'debt.recorded',
+  'directive.received',
+  'gate.evaluated',
+  'run.finished',
+  // ── 后续补上的（都属于「交付结论的可信度发生了变化」这类必须留痕的事件）──
+  'profile.refreshed',
+  'requirement.status.synced',
+  'testreport.published',
+  'project.contract.snapshot',
+  'project.contract.violation',
+] as const;
+
+export type DecisionKind = (typeof DECISION_KINDS)[number];
 
 export type DecisionEntry = {
   seq: number;

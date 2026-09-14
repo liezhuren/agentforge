@@ -7,14 +7,14 @@ import type { AnchorId, AnchorRunResult, ArtifactStore, ProjectProfile } from '.
 import { readTextOrNull, walkFiles } from '../../core/src/fsutil.ts';
 import type { Logger } from '../../core/src/logger.ts';
 import { silentLogger } from '../../core/src/logger.ts';
-import { A1, A2, A3, A4, A5, A6, A7, FACT_ANCHORS } from './fact.ts';
+import { A1, A2, A3, A4, A5, A6, A7, A8, FACT_ANCHORS } from './fact.ts';
 import { B1, B2, B3, SEMANTIC_ANCHORS } from './semantic.ts';
 import type { Anchor, AnchorContext, SemanticProposals } from './types.ts';
 
 export * from './types.ts';
 export * from './imports.ts';
 export * from './pkgresolve.ts';
-export { A1, A2, A3, A4, A5, A6, A7, B1, B2, B3, FACT_ANCHORS, SEMANTIC_ANCHORS };
+export { A1, A2, A3, A4, A5, A6, A7, A8, B1, B2, B3, FACT_ANCHORS, SEMANTIC_ANCHORS };
 
 export const ALL_ANCHORS: Anchor[] = [...FACT_ANCHORS, ...SEMANTIC_ANCHORS];
 
@@ -32,6 +32,8 @@ export type CreateContextOptions = {
   proposals?: SemanticProposals;
   /** 运行 ID 前缀，保证同一 run 内可复现。 */
   runPrefix?: string;
+  /** 项目契约（验证基准）的当前状态，供 A8 检查。 */
+  contract?: import('../../core/src/projectcontract.ts').ContractState;
   /** 锚点结果广播目标（前端只投影事件，不持有真相）。 */
   emit?: (event: ForgeEvent) => void;
 };
@@ -65,6 +67,7 @@ export function createAnchorContext(opts: CreateContextOptions): AnchorContext {
       counter++;
       return `${opts.runPrefix ?? 'run'}-${String(counter).padStart(3, '0')}`;
     },
+    ...(opts.contract ? { contract: opts.contract } : {}),
     emit: opts.emit,
   };
   return ctx;

@@ -45,9 +45,16 @@ LLM 幻觉最典型的形态不是编造包名，而是 `import { parseZodSchema
 | **A5** | 测试执行 | 真实运行测试命令，取退出码 + 通过/失败数 + 覆盖率 | `FAIL(tests)` 附 failingCases[] |
 | **A6** | 运行时行为 | 按项目声明的 `run` 配置真正启动服务，做 HTTP 探针（health endpoint / 冒烟请求），超时与端口冲突单独归类 | `FAIL(runtime)` 附 探针结果 |
 | **A7** | 契约一致性 | 对冻结契约：校验实际 HTTP 响应是否符合 OpenAPI schema；校验生成的 TS 类型与契约 hash 一致 | `FAIL(contract-drift)` 附 偏离路径 |
+| **A8** | 验证基准未被篡改 | 把产出与**运行开始时固化的项目契约**比对：`package.json` 的已声明顶层键不得被删改，`tsconfig.json` 与项目声明的 `protectedFiles` 不得被改写，产出路径不得越出项目根 | `FAIL(contract-key-removed)` / `FAIL(contract-key-changed)` / `FAIL(contract-file-overwritten)` 附 键路径 + 原值 + 产出想写成的值 |
 
 > A4–A6 是**可执行反馈**，也是参考项目（MetaGPT 等）用过的有效手段。本项目的增量在于：
 > 结果被**结构化**成 `AnchorResult`，携带文件+行+错误码，能直接作为工单重新派给正确角色，而不需要 LLM 再"读日志猜原因"。
+>
+> **A8 是唯一一个检查「产出行为」而不是「产出内容」的锚点**，理由是它守着全项目最核心的那条不变量：
+> 「每一个 PASS 都必须能追溯到一个不依赖 LLM 的事实」—— 而**如果取证方式本身可以被被验证者改写，这条不变量就只是措辞**。
+> 实测来源见 `docs/07 §N1`：第 12 轮真实运行里，产出附带的 `package.json` 删掉了项目声明的 `healthUrl`，
+> 于是 A6 从「真起服务、真发 HTTP」静默变成 SKIPPED，而那次运行照常走到了交付。
+> 详见 §6.4。
 
 ### B 层 · 语义锚（Semantic Anchors）
 
@@ -136,10 +143,15 @@ type GateResult = {
 | 声称"测试通过"但测试未运行 | A5 | `FAIL(no-tests-ran)` / `SKIPPED` 不可当 PASS |
 | 需求遗漏 | B2 | 覆盖矩阵缺项 |
 | 契约漂移（手写重复模型 / 未声明端点） | A7 | `WARN(contract-duplication)` / `WARN(undeclared-endpoint)` |
+| **产出改写验证基准**（删 `package.json` 键、换测试命令、改 `tsconfig` 排除范围） | **A8** | `FAIL(contract-key-removed)` / `FAIL(contract-key-changed)` / `FAIL(contract-file-overwritten)` + 保留原值 + 派工单 |
 | 主理人编造问题 | 机械裁判 | `REFUTED` + 误报计数 |
 | 用旧绿灯掩盖新代码 | hash 校验 | 锚点 `STALE`，强制重跑 |
 
 **核心不变量**：*任何"通过"的结论，都必须能追溯到一个不依赖 LLM 的事实。*
+
+> 上面最后一条（A8）之所以单列，是因为它与其他各条**不在一个层级**上：
+> 其余各条防的是「产出说假话」，A8 防的是「产出把测谎仪换掉」。
+> 判据见 §6.7。
 
 ---
 
@@ -166,6 +178,7 @@ type GateResult = {
 | A3 | `authoritative` | 存在别名导入未验证时 → `approximate` |
 | A4/A5/A6 | `authoritative` | 工具链缺失时 → `none`（SKIPPED） |
 | A7 | `authoritative` | — |
+| A8 | `authoritative` | 运行开始时项目未声明任何契约（空白工作区）→ `none`（SKIPPED）；拿不到契约状态 → `none`（SKIPPED） |
 | B1 | `approximate`（含 LLM 提议） | 恒为 approximate |
 
 ### 6.3 宁可 WARN，不可错判
@@ -204,3 +217,59 @@ falsifier 的 command 来自 LLM，是不可信输入。第一版对参数做 `;
 受限环境下无法打开命名管道，`child_process.exec` / 默认 `stdio: 'pipe'` 会直接 `EPERM`。
 `execCapture` 把子进程 stdout/stderr 重定向到临时**文件**再读回，
 在所有环境下都能拿到完整输出与真实退出码。A4/A5/A6 依赖这一点，且已用真实 HTTP 探针验证。
+
+### 6.7 被验证者不得修改验证基准（A8）
+
+**这是本项目目前发现的最高严重度的一类问题**，因为它掏空的不是某个检查，而是「检查」这件事本身。
+
+#### 现象（真实数据，第 12 轮）
+
+后端角色交出的 `CodeModule` 里附了一份**自己写的 `package.json` 与 `tsconfig.json`**：
+
+| 它改了什么 | 后果 |
+|---|---|
+| 删掉 `agentforge.healthUrl` | **A6 静默变成 SKIPPED**（「未配置 run 命令与 healthUrl」），而 A6 是唯一能发现「服务根本起不来」的锚点 |
+| 删掉 `agentforge.environmentNotes` | 「不许 spawn / 导入要带 `.ts`」两条项目约束从**每个角色的提示词里消失** |
+| `scripts.test`：`node run-tests.mjs` → `node --experimental-strip-types --test` | 换成了**在本环境跑不通**的那个命令（`run-tests.mjs` 正是为绕开它才存在的） |
+| `scripts.start` 指向另一个文件 | 启动命令被换掉 |
+| `tsconfig.json` 加 `exclude: ["test", "**/*.test.ts"]` | **测试文件被排除出类型检查**，A4 的覆盖范围被静默缩小 |
+
+注意这些动作**不产生任何一条「代码有 bug」的失败**：A6 报 SKIPPED，A4/A5 报「环境没配好」。
+从工单上看，它长得像「环境问题」或「模型能力不足」——
+**而真实原因是被验证者修改了验证基准。** 按 `docs/07 §N1` 的判据，这又是一个
+「锚点判得对、但归因会误导」的形态；区别是这次连「判得对」都不成立了。
+
+#### 修法
+
+三层，缺一层都不够：
+
+1. **固化基准**：`run()` 一开始读一次 `package.json` 顶层键 + 受保护文件，
+   之后**产出不得删除或改写**已声明的键（新增键允许）。
+   实现见 `packages/core/src/projectcontract.ts`，它是纯函数，可脱离 LLM 单测。
+2. **封住全部写盘入口**：`materializeFiles`（角色产出）**和** `writeContractTypes`
+   （生成类型文件 —— 它的落点由 PM 的 Contract 工件声明）都过同一道闸。
+   只堵前者等于没堵：这正是 `docs/07 §L13` 那条教训（漏掉一个入口 =
+   「反复跑同一个项目」这个最常规用法每次 400）。
+3. **报出来并派工单**：A8 把违规报成 **FAIL**（不是 warn —— 降级就是重演「静默通过」），
+   按 `targetRole` 机械归因，Gate 直接生成返工工单。
+
+#### 两个刻意的设计选择
+
+- **保护范围由项目声明，引擎只硬编码 `package.json` 与 `tsconfig.json`**。
+  「哪些文件属于验证基础设施」因项目而异（`run-tests.mjs` / `vitest.config.ts` / `Makefile`），
+  硬编码清单只会在别人的项目里出错 —— 与 `environmentNotes` 同一个道理（`docs/07 §L5`）。
+- **违规按 Gate 结算、用完即清**。A8 回答的是「本轮产出有没有篡改基准」，
+  和 A4「现在还有没有编译错误」同类：**看当下状态，不看历史**。
+  累积的话，一次没生效的尝试会让整轮永远 FAIL、最后只能带债通过，
+  既冤枉了已经改好的角色，也稀释了「带债」这个信号。
+
+#### 已知边界（诚实记录）
+
+- **空白工作区没有可保护的基准**：运行开始时没有 `package.json`，
+  工具链本身就是产出写的，保护它没有意义。此时 A8 如实报 SKIPPED。
+  正确用法是让项目方**先声明契约**再跑（`scripts/preseed-llm-workspace.ts` 就是干这个的），
+  `deriveProfile` 也会把这件事写进 notes 提醒人类。
+- **规则是严格的**（所有已声明顶层键），因此模型把项目 `name`/`version` 改掉的
+  「善意重命名」也会被判违规。这是刻意的取舍：一旦开始判断「哪些键重要」，
+  就回到了硬编码清单那条老路（§6.7 第 1 条）。而且合规成本极低 ——
+  **角色只要不附带这些文件就绝不会触发**，提示词里已经明确告知。

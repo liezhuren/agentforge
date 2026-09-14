@@ -1288,7 +1288,93 @@ function escapeRe(s: string): string {
 }
 
 // ════════════════════════════════════════════════════════════════
+// A8 · 验证基准未被产出篡改
+// ════════════════════════════════════════════════════════════════
 
-export const FACT_ANCHORS: Anchor[] = [A1, A2, A3, A4, A5, A6, A7];
+/**
+ * A8 检查的是**验证基准本身有没有被动过**，而不是被生成代码的质量。
+ *
+ * 为什么它必须是锚点、而且是 FAIL 级别的锚点（docs/HANDOFF.md §8.1）：
+ *
+ * 第 12 轮真实运行里，后端角色交出的 CodeModule 附了一份自己写的 `package.json`：
+ * 删掉 `agentforge.healthUrl`（A6 于是静默 SKIPPED）、删掉 `environmentNotes`、
+ * 把 `scripts.test` 换成在本环境跑不通的命令，并且用 `tsconfig.json` 的
+ * `exclude` 把测试目录排除出类型检查。
+ *
+ * 这些动作**不产生任何一条「代码有 bug」的失败**：A6 报的是 SKIPPED，
+ * A4/A5 报的是「环境没配好」。于是从工单上看，它长得像「环境问题」或「模型能力不足」，
+ * 而真实原因是：**被验证者修改了验证基准**。
+ *
+ * 这条锚点的存在意义就是让那个区别在系统里是可见的：
+ * 基准被动过 ⇒ 直接 FAIL，并且按 `targetRole` 机械归因到那个角色头上，派工单返工。
+ *
+ * 它**不看盘上的文件内容**：文件已经被编排器按契约规整过了（原值被保留），
+ * 所以「现在文件是好的」。A8 报的是「产出尝试改过它」——
+ * 一次没生效的篡改尝试依旧是篡改尝试，而且下一次的向量未必在保护范围内。
+ * 把它降级成 warn 就等于重演「静默通过」那类假绿灯。
+ */
+export const A8: Anchor = {
+  id: 'A8',
+  title: '验证基准未被篡改',
+  layer: 'A',
+  appliesTo(ctx) {
+    // 拿不到契约状态，或本次运行确实没有任何基准（空白工作区且没有受保护文件）：
+    // 如实报「不适用」而不是造一个 PASS。理由同 A4/A5/A6 的 SKIPPED。
+    if (!ctx.contract) return false;
+    return ctx.contract.hasBaseline || ctx.contract.violations.length > 0;
+  },
+  async run(ctx): Promise<AnchorOutcome> {
+    const state = ctx.contract;
+    if (!state) {
+      return {
+        verdict: 'SKIPPED',
+        findings: [
+          {
+            code: 'contract-not-tracked',
+            severity: 'warn',
+            message: '本次运行未固化项目契约，无法核实验证基准是否被动过（未验证 ≠ 通过）',
+          },
+        ],
+        method: 'none',
+        authority: 'none',
+        subjects: [],
+        contentHashes: {},
+      };
+    }
+
+    const findings: AnchorFinding[] = state.violations.map((v) => ({
+      code: v.code,
+      severity: 'fail' as const,
+      message: v.message,
+      file: v.path,
+      targetRole: v.targetRole,
+      data: {
+        ...(v.key ? { key: v.key } : {}),
+        ...(v.declared ? { declared: v.declared } : {}),
+        ...(v.attempted ? { attempted: v.attempted } : {}),
+        artifactKind: v.artifactKind,
+      },
+    }));
+
+    const base = subjectsOf(ctx);
+    return {
+      verdict: findings.length > 0 ? 'FAIL' : 'PASS',
+      findings,
+      method: 'deterministic project-contract comparison（产出 vs 运行开始时的基准）',
+      authority: 'authoritative',
+      subjects: base.ids,
+      contentHashes: base.hashes,
+      meta: {
+        declaredPkgKeys: state.declaredPkgKeys,
+        protectedFiles: state.protectedFiles,
+        violations: state.violations.length,
+      },
+    };
+  },
+};
+
+// ════════════════════════════════════════════════════════════════
+
+export const FACT_ANCHORS: Anchor[] = [A1, A2, A3, A4, A5, A6, A7, A8];
 export { sliceLines, walkFiles, readTextOrNull };
 export type { TestSuiteDoc };

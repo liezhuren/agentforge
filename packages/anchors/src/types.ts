@@ -30,6 +30,7 @@ import type {
   TestSuiteDoc,
 } from '../../core/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
+import type { ContractState } from '../../core/src/projectcontract.ts';
 
 // ── 语义提议（由 roles 层 / LLM 产出，锚点只核验不采信）────────────
 
@@ -66,6 +67,15 @@ export type AnchorContext = {
   readFile(rel: string): Promise<string | null>;
   /** 生成本次运行的唯一 ID（由编排器注入，保证可回放）。 */
   nextRunId(): RunId;
+  /**
+   * 项目契约（验证基准）的当前状态，由编排器注入。A8 检查它。
+   *
+   * 为 `undefined` 时 A8 报 SKIPPED —— 锚点包里拿不到基准，就绝不假装检查过。
+   * 注意这里放的是**状态**而不是文件内容：文件本身已经被编排器按契约规整过了
+   * （见 `core/src/projectcontract.ts`），所以 A8 要报的是「产出**尝试**改基准」这件事，
+   * 而不是「基准现在是坏的」。
+   */
+  contract?: ContractState;
   /** 广播锚点结果。前端只需投影事件，不需要读磁盘。 */
   emit?: (event: ForgeEvent) => void;
 };

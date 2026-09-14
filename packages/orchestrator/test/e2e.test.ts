@@ -1330,3 +1330,195 @@ test('端到端：结构化重试会把具体校验错误回喂给模型（不�
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ════════════════════════════════════════════════════════════════
+// 验收用例：产出不得修改验证基准（A8 / 项目契约）
+// ════════════════════════════════════════════════════════════════
+//
+// 真实数据（docs/HANDOFF.md §8.1）：第 12 轮真实运行里，backend 角色交出的
+// CodeModule 附了一份自己写的 package.json，把项目声明的 agentforge.healthUrl 删掉，
+// 于是 A6 静默变成 SKIPPED —— 而那次运行**照常走到了交付**。
+// 同一份产出还把 tsconfig.json 的 exclude 改成排除测试目录，削弱了 A4。
+//
+// 这个用例复现那个场景，并验证三件事：
+//   1. 盘上的基准**原封不动**（被验证者改不动验证基准）
+//   2. 这次尝试**没有被静默吞掉**：A8 FAIL，并且机械归因到 backend 派了工单
+//   3. 返工后能正常收敛 —— 保护机制不惩罚已经改好的角色
+
+/** llm-12 那份产出的忠实复刻：删掉项目声明的 dependencies 键。 */
+const TAMPERED_PKG = JSON.stringify(
+  {
+    name: 'task-board',
+    version: '0.1.0',
+    type: 'module',
+    scripts: { typecheck: 'tsc --noEmit', test: 'node --test', start: 'node src/api/routes.ts' },
+  },
+  null,
+  2,
+);
+
+/** 把测试目录排除出类型检查 —— 静默削弱 A4。 */
+const TAMPERED_TSCONFIG = JSON.stringify(
+  {
+    compilerOptions: { strict: true },
+    include: ['src'],
+    exclude: ['node_modules', 'tests', '**/*.test.ts'],
+  },
+  null,
+  2,
+);
+
+const ORIGINAL_TSCONFIG = JSON.stringify({ compilerOptions: { strict: true, noEmit: true } }, null, 2);
+
+test('契约：产出试图改写 package.json / tsconfig.json → 基准原封不动，A8 FAIL 并派工单', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'af-contract-e2e-'));
+  try {
+    const profile = await scaffoldProject(root);
+    // tsconfig 必须在**运行开始之前**就存在，才会进入契约基准
+    await write(root, 'tsconfig.json', ORIGINAL_TSCONFIG);
+
+    const events: ForgeEvent[] = [];
+    const bus = new EventBus();
+    bus.on((e) => events.push(e));
+
+    const provider = new MockProvider({
+      script: happyScript({
+        // 第一次产出：夹带私货，试图替换项目契约
+        'produce:CodeModule:api': {
+          files: [
+            { path: 'src/api/routes.ts', content: API_CODE },
+            { path: 'package.json', content: TAMPERED_PKG },
+            { path: 'tsconfig.json', content: TAMPERED_TSCONFIG },
+          ],
+        },
+        // 返工：干净的产出（真实模型被打回后也会这样重交）
+        'repair:CodeModule:api': {
+          files: [{ path: 'src/api/routes.ts', content: API_CODE }],
+        },
+      }),
+    });
+    const runners = createRoleRunners(provider);
+    const verifier = new SemanticVerifier({ provider });
+    const log = new DecisionLog(root);
+    const orch = new Orchestrator({
+      projectRoot: root,
+      profile,
+      userBrief: USER_BRIEF,
+      runners,
+      verifier,
+      provider,
+      humanAvailable: false,
+      offline: true,
+      log,
+      bus,
+      logger: silentLogger('contract-e2e'),
+    });
+
+    const summary = await orch.run();
+
+    // ── 1. 盘上的基准原封不动 ────────────────────────────────
+    const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      scripts?: Record<string, string>;
+    };
+    assert.deepEqual(
+      pkg.dependencies,
+      { 'leftpad-real': '^1.0.0' },
+      '项目在 package.json 里声明的 dependencies 不得被产出删掉',
+    );
+    assert.equal(
+      await readFile(join(root, 'tsconfig.json'), 'utf8'),
+      ORIGINAL_TSCONFIG,
+      '受保护的 tsconfig.json 不得被产出改写（那段 exclude 会让测试逃过类型检查）',
+    );
+
+    // ── 2. 这次尝试没有被静默吞掉 ────────────────────────────
+    const a8 = events
+      .filter((e): e is Extract<ForgeEvent, { t: 'anchor.ran' }> => e.t === 'anchor.ran')
+      .map((e) => e.result)
+      .filter((r) => r.anchorId === 'A8');
+    assert.ok(a8.length > 0, 'A8 必须被真的跑过（注册进 STAGE_ANCHORS 了吗？）');
+    const failed = a8.find((r) => r.verdict === 'FAIL');
+    assert.ok(failed, `A8 必须报 FAIL，实际：${a8.map((r) => r.verdict).join(',')}`);
+    assert.ok(
+      failed.findings.some((f) => f.code === 'contract-key-removed' && f.targetRole === 'backend'),
+      JSON.stringify(failed.findings, null, 2),
+    );
+    assert.ok(
+      failed.findings.some((f) => f.code === 'contract-file-overwritten'),
+      '改写 tsconfig 也必须被报出来',
+    );
+
+    const order = summary.workOrders.find((o) => o.to === 'backend');
+    assert.ok(order, '必须按机械归因派出工单，否则保护机制只是日志');
+    assert.ok(
+      order.acceptance.some((a) => a.includes('不要') && a.includes('package.json')),
+      `验收条件必须告诉角色「别附带契约文件」，实际：${JSON.stringify(order.acceptance)}`,
+    );
+
+    // 决策日志里留痕（哈希链可 verify，历史不可改写）
+    await log.init();
+    const raw = await readFile(join(root, 'decisions.jsonl'), 'utf8').catch(() => '');
+    assert.ok(
+      raw.includes('project.contract.violation'),
+      `违规必须写进决策日志，实际日志：${raw.slice(0, 400)}`,
+    );
+    assert.deepEqual(await log.verify(), { ok: true });
+
+    // ── 3. 返工后能收敛（保护机制不惩罚已经改好的角色）────────
+    assert.equal(summary.delivery, 'complete', JSON.stringify(summary.traces, null, 2));
+    assert.equal(summary.finalStage, 'DELIVERED');
+    assert.ok(
+      summary.traces.some((t) => t.stage === 'BUILDING' && t.cycles >= 1),
+      '应当经历一次返工',
+    );
+    // 关键：违规按 Gate 结算、用完即清 —— 第二名返工干净了，A8 就该放行，
+    // 而不是让这个 run 从此永远 FAIL 到只能带债通过。
+    const laterA8 = a8.filter((r) => r.verdict === 'PASS');
+    assert.ok(laterA8.length > 0, `返工后 A8 应当转为 PASS，实际序列：${a8.map((r) => r.verdict).join(',')}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('契约：干净的项目里 A8 PASS，且不产生任何工单（保护机制不误报）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'af-contract-clean-'));
+  try {
+    const profile = await scaffoldProject(root);
+    await write(root, 'tsconfig.json', ORIGINAL_TSCONFIG);
+
+    const events: ForgeEvent[] = [];
+    const bus = new EventBus();
+    bus.on((e) => events.push(e));
+
+    const provider = new MockProvider({ script: happyScript() });
+    const orch = new Orchestrator({
+      projectRoot: root,
+      profile,
+      userBrief: USER_BRIEF,
+      runners: createRoleRunners(provider),
+      verifier: new SemanticVerifier({ provider }),
+      provider,
+      humanAvailable: false,
+      offline: true,
+      bus,
+      logger: silentLogger('contract-clean'),
+    });
+
+    const summary = await orch.run();
+    assert.equal(summary.delivery, 'complete', JSON.stringify(summary.traces, null, 2));
+
+    const a8 = events
+      .filter((e): e is Extract<ForgeEvent, { t: 'anchor.ran' }> => e.t === 'anchor.ran')
+      .map((e) => e.result)
+      .filter((r) => r.anchorId === 'A8');
+    assert.ok(a8.length > 0);
+    assert.ok(
+      a8.every((r) => r.verdict === 'PASS'),
+      `没有任何篡改时 A8 不得报 FAIL，实际：${a8.map((r) => r.verdict).join(',')}`,
+    );
+    assert.equal(summary.workOrders.length, 0, '不该凭空产生工单');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

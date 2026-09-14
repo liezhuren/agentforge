@@ -61,6 +61,12 @@ await w(
             '当前运行环境禁止管道式 stdio，spawn 会直接 EPERM 失败 —— ' +
             '测试应当直接 import 被测模块并对返回值做断言，不要通过命令行间接验证。',
         ],
+        // 验证基准文件：产出不得改写它们。
+        // package.json 与 tsconfig.json 是引擎认定的通用基准，不必列；
+        // 这里列的是**本项目特有**的验证基础设施 —— 换一个项目可能是
+        // vitest.config.ts / jest.config.js / Makefile，所以由项目自己声明。
+        // 不列的话，角色可以用一份 `process.exit(0)` 的测试运行器让 A5 拿到假绿灯。
+        protectedFiles: ['run-tests.mjs'],
       },
       devDependencies: { typescript: '^7.0.0', '@types/node': '^26.0.0' },
     },

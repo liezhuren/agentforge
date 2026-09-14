@@ -69,7 +69,7 @@ node packages/server/src/cli.ts                # 打开 http://127.0.0.1:7788
 
 `node scripts/verify-real-app.ts` 做两件事，第二件事**不依赖第一件的任何结论**：
 
-1. **流水线**：走完 `INTAKE → DELIVERED`，A1–A7 七个锚点**全部真实执行**（无 SKIPPED）
+1. **流水线**：走完 `INTAKE → DELIVERED`，A1–A8 八个锚点**全部真实执行**（无 SKIPPED）
 2. **独立验证**：绕开锚点系统，直接对产物做真编译 / 真测试 / 真启动 + 真 HTTP 请求
 
 一次真实结果（报告见 `docs/09-field-report.md`，由脚本自动生成）：
@@ -232,12 +232,20 @@ A 层零 LLM、纯确定性；B 层有 LLM 参与，但每个结论必须锚定�
 | A5 | 测试执行 | 真实跑测试，取退出码与覆盖率 | A |
 | A6 | 运行时行为 | 真实启动服务 / e2e HTTP 探针 | A |
 | A7 | 契约一致性 | 实现对冻结契约的符合性（OpenAPI / JSON Schema 校验真实响应） | A |
+| **A8** | **验证基准未被篡改** | 产出有没有**改掉测量工具本身**：删除/改写项目在 `package.json` 里声明的键、替换测试命令、用 `tsconfig.exclude` 缩小类型检查范围、把文件写到项目根之外 | A |
 | B1 | 目标达成 | LLM 逐条需求判定，**每条必须给出指向真实存在的文件+行的 evidence**，否则该条作废 | B |
 | B2 | 需求覆盖矩阵 | 需求 → 实现 → 测试 的映射，缺项直接暴露 | B |
 | B3 | 对抗审查 | 主理人在 A 层全绿时仍可提语义质疑，但必须给出可执行 falsifier | B |
 
 设计原则：**LLM 永远不是最终裁判**。LLM 的判定降级为"提议"，由确定性规则或真人确证。
 详见 `docs/02-anchor-protocol.md`。
+
+> A8 是唯一一个检查**产出行为**、而不是产出内容的锚点，它守的是最根本的一条：
+> 「每一个 PASS 都必须能追溯到一个不依赖 LLM 的事实」——
+> 而**如果取证方式本身可以被被验证者改写，这条不变量就只是措辞**。
+> 它来自一次真实实测：生成代码附带的 `package.json` 删掉了项目声明的健康检查地址，
+> 于是「真起服务、真发 HTTP」那个锚点**静默变成了「跳过」**，而那次运行照常走到了交付。
+> 详见 `docs/02-anchor-protocol.md §6.7`。
 
 ---
 
@@ -348,7 +356,7 @@ A 层零 LLM、纯确定性；B 层有 LLM 参与，但每个结论必须锚定�
 agentforge/
 ├─ docs/                     规格文档（先于代码）
 │  ├─ 01-architecture.md     总体架构、阶段状态机、全局不变量
-│  ├─ 02-anchor-protocol.md  多层锚点（A1–A7 / B1–B3）与幻觉判定表
+│  ├─ 02-anchor-protocol.md  多层锚点（A1–A8 / B1–B3）与幻觉判定表
 │  ├─ 03-host-accountability.md  主理人对抗性找茬 + 问责账本 R1–R10 + 推进保证
 │  ├─ 04-interface-protocol.md   接口即通信、写权限矩阵、契约冻结
 │  ├─ 05-roundtable-and-directive.md  圆桌会议 T1–T5 + 真人建议书
@@ -363,7 +371,7 @@ agentforge/
 ├─ packages/
 │  ├─ core/                  领域模型、schema、工件存储、事件、决策日志、子进程执行（含 Windows 可执行解析）、契约代码生成
 │  ├─ llm/                   Provider（OpenAI 兼容 / Ollama）、能力探测、严格模式转换、预算、回放、配置
-│  ├─ anchors/               A1–A7 事实锚 + B1–B3 语义锚（含证据核验器）；bench/ 为幻觉靶场
+│  ├─ anchors/               A1–A8 事实锚 + B1–B3 语义锚（含证据核验器）；bench/ 为幻觉靶场
 │  ├─ orchestrator/          账本、机械裁判、Gate、状态机、圆桌、死锁逃生 + 三个 CLI + 演示项目
 │  ├─ roles/                 五角色 prompt、读权限矩阵、LLM 运行器、语义验证器
 │  └─ server/                HTTP API + SSE 事件流 + 静态资源（控制台后端）
@@ -460,7 +468,7 @@ agentforge/
 | 包 | 内容 | 测试 |
 |---|---|---|
 | `packages/core` | 领域模型、自实现 JSON Schema 校验器、工件存储（不可变 + 版本链 + 写权限矩阵 + schema 门禁 + 锚点链 hash 绑定）、事件总线、哈希链决策日志、子进程捕获 + 命令安全闸、契约→TS 类型代码生成 | 16 |
-| `packages/anchors` | A1–A7 事实锚全部真实实现、B1–B3 语义锚（LLM 提议 + 确定性证据核验）、运行器与权威度标注；`bench/` 幻觉靶场 | 36 + 6 |
+| `packages/anchors` | A1–A8 事实锚全部真实实现、B1–B3 语义锚（LLM 提议 + 确定性证据核验）、运行器与权威度标注；`bench/` 幻觉靶场 | 36 + 6 |
 | `packages/orchestrator` | 账本 R1–R10、机械裁判三档裁决、Gate + `blockingGaps`、状态机、**圆桌 T1–T5 + 交叉质询（当场执行 falsifier）+ 反和稀泥校验 + 机械事实约束决议**、建议书编译、三层死锁逃生 | 25 + 12 + 16 + 6 |
 | 端到端 | 多场景全流程集成测试（含圆桌交叉质询 → 升级真人） | 18 |
 | `packages/server` | HTTP API + SSE + 静态资源 + 状态投影（`/api/state` 与 SSE 首帧同源） | 12 |

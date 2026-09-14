@@ -56,11 +56,11 @@ export const STAGE_ANCHORS: Record<StageId, AnchorId[]> = {
   INTAKE: [],
   PLANNING: ['B2'],
   CONTRACTING: ['A7', 'B2'],
-  BUILDING: ['A1', 'A2', 'A3', 'A4', 'A5', 'B2'],
-  REVIEW: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B2', 'B3'],
+  BUILDING: ['A1', 'A2', 'A3', 'A4', 'A5', 'A8', 'B2'],
+  REVIEW: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'B1', 'B2', 'B3'],
   ROUNDTABLE: [],
   ARBITRATION: [],
-  DELIVERED: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B2'],
+  DELIVERED: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'B1', 'B2'],
 };
 
 /** 归因优先级：问题落到谁头上，工单就派给谁。 */
@@ -612,6 +612,26 @@ export function acceptanceFor(finding: { code: string; file?: string; line?: num
       return '产出可验收的需求清单（每条含 acceptance），使 B2 锚点 PASS';
     case 'contract-duplication':
       return `移除 ${loc} 中手写的模型 "${String(d.model)}"，改为引用契约生成的类型，使 A7 锚点 PASS`;
+    /**
+     * A8：产出不得修改验证基准。
+     *
+     * 验收条件刻意写成「不要再交这个文件」，而不是「把它改回来」——
+     * 文件本身已经被编排器保留了项目原值（盘上是好的），
+     * 要修的是**产出的行为**：把项目契约文件从这次产出里删掉。
+     */
+    case 'contract-key-removed':
+    case 'contract-key-changed':
+      return (
+        `不要把 ${loc} 里项目声明的键 "${String(d.key ?? '')}" 删掉或改写 —— ` +
+        `该文件已存在，它是验证基准的一部分，产出只应写 ${String(d.artifactKind ?? 'CodeModule')} ` +
+        `自己负责的源码文件（不要附带 package.json / tsconfig.json）`
+      );
+    case 'contract-file-overwritten':
+      return `从产出里去掉 ${loc}：它是受保护的验证配置文件（验证基准），产出不得改写它`;
+    case 'contract-file-invalid':
+      return `不要写 ${loc}（内容不是合法 JSON 对象，无法作为契约基准），只写自己负责的源码文件`;
+    case 'path-escapes-project':
+      return `把产出路径 ${loc} 改成项目工作区内的相对路径（不得越出项目根）`;
     case 'undeclared-endpoint':
       return `修正 ${loc} 中对未声明端点 ${String(d.called)} 的调用，或走契约变更流程，使 A7 锚点 PASS`;
     default:
