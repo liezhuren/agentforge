@@ -6,6 +6,87 @@ import { join, resolve } from 'node:path';
 
 import { silentLogger } from '../../core/src/index.ts';
 import { createForgeServer, type ForgeServer } from '../src/index.ts';
+import { deriveVerdict } from '../src/run-manager.ts';
+
+// ════════════════════════════════════════════════════════════════
+// 「真·完整」判定：服务端唯一派生处，覆盖两个维度的四个格子
+// ════════════════════════════════════════════════════════════════
+
+const summaryWith = (
+  delivery: 'complete' | 'with-debt' | 'awaiting-human' | 'held',
+  statuses: string[],
+): Parameters<typeof deriveVerdict>[0] =>
+  ({ delivery, requirementStatuses: statuses.map((s, i) => ({ id: `R-00${i + 1}`, status: s })) }) as never;
+
+test('交付判定：两个维度互相独立，四个格子都如实（这是设计依据）', () => {
+  // 实测 10 轮真实运行的 38 条需求判定显示机械层与需求层**互相独立**：
+  //   机械❌ 需求✅ —— llm-4 (8/0/0)、llm-6 (2/0/0)
+  //   机械✅ 需求❓ —— llm-9 (0/2/0)
+  //   机械✅ 需求✅ —— llm-10
+  //   机械❌ 需求❓ —— 其余多轮
+  // 所以既不能「需求没全 met 就不许叫 complete」（会冤枉 llm-4/6），
+  // 也不能「complete 就当成需求通过」（llm-9 就是假绿灯）。
+
+  // ① 机械✅ 需求✅ → 唯一亮「真·完整」的格子
+  const a = deriveVerdict(summaryWith('complete', ['met', 'met']));
+  assert.equal(a.fullyVerified, true);
+  assert.equal(a.requirements, 'verified');
+  assert.ok(a.summary.includes('全部验证通过'), a.summary);
+
+  // ② 机械✅ 需求❓ → **不得**是 fullyVerified；措辞必须点明「确认不了 ≠ 没查」
+  const b = deriveVerdict(summaryWith('complete', ['met', 'unverified']));
+  assert.equal(b.fullyVerified, false, '机械全过但有一条确认不了 ⇒ 不能声称完整');
+  assert.equal(b.requirements, 'unverified');
+  assert.equal(b.mechanical, 'complete', '机械维度本身是过的，不能一起否定 —— 那是另一个事实');
+  assert.ok(b.summary.includes('确认不了'), b.summary);
+  assert.ok(b.summary.includes('不是没查'), `必须区分「查过但说不清」与「还没查」：${b.summary}`);
+
+  // ③ 机械❌ 需求✅ → 需求维度必须仍然是 verified（否则会冤枉「需求其实都达成了」）
+  const c = deriveVerdict(summaryWith('with-debt', ['met', 'met']));
+  assert.equal(c.fullyVerified, false, '带债不能算真·完整');
+  assert.equal(c.requirements, 'verified', '需求确实都达成了，这个事实不能因为机械层失败而被抹掉');
+  assert.equal(c.mechanical, 'with-debt');
+
+  // ④ 机械❌ 需求❓
+  const d = deriveVerdict(summaryWith('with-debt', ['unverified', 'open']));
+  assert.equal(d.fullyVerified, false);
+  assert.equal(d.requirements, 'unverified', 'unverified 比 open 更值得提示：它是「查了但说不清」');
+
+  // 边界：没有需求、未运行
+  assert.equal(deriveVerdict(summaryWith('complete', [])).requirements, 'no-requirements');
+  assert.equal(deriveVerdict(null).mechanical, 'unknown');
+  assert.equal(deriveVerdict(null).fullyVerified, false);
+
+  // counts 必须与传入一致（界面直接渲染它，不能再聚合一遍）
+  const e = deriveVerdict(summaryWith('with-debt', ['met', 'unverified', 'open', 'accepted_with_debt']));
+  assert.deepEqual(e.counts, { met: 1, unverified: 1, open: 1, acceptedWithDebt: 1, total: 4 });
+});
+
+test('交付判定：/api/state 必须带上服务端派生的 verdict（前端不得自己重算）', async () => {
+  await withServer(async (forge, base) => {
+    await postJson(`${base}/api/run`, { mode: 'demo', scenario: 'clean', fresh: true });
+    await forge.manager.wait();
+
+    const s = (await getJson(`${base}/api/state`)).body as {
+      delivery: string;
+      verdict: {
+        fullyVerified: boolean;
+        mechanical: string;
+        requirements: string;
+        counts: { met: number; total: number };
+        summary: string;
+      };
+    };
+
+    assert.ok(s.verdict, 'verdict 必须存在 —— 界面的两个维度都读它');
+    // clean 场景的 mock 给的是 met，所以两轴都过
+    assert.equal(s.verdict.mechanical, 'complete');
+    assert.equal(s.verdict.requirements, 'verified');
+    assert.equal(s.verdict.fullyVerified, true);
+    assert.equal(s.verdict.counts.met, s.verdict.counts.total);
+    assert.ok(s.verdict.summary.length > 0, '措辞由服务端统一给，避免各处拼出不同说法');
+  });
+});
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 

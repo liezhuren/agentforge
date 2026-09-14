@@ -76,7 +76,89 @@ export type FullState = ServerState & {
   summary: RunSummary | null;
   /** 建议书执行情况：哪些被编译成强制约束、哪些只能作为角色指令。 */
   directiveEnforcement: DirectiveEnforcementReport | null;
+  /** 「真·完整」判定。**由服务端派生**，前端只读不算（见下方 deriveVerdict 的说明）。 */
+  verdict: DeliveryVerdict;
 };
+
+/**
+ * 「这次交付到底算不算真的完成了」——**唯一的判定处**。
+ *
+ * ## 为什么必须派生在服务端
+ *
+ * 判定规则一旦有两个实现，就会在规则演进时分叉。控制台曾经自己用
+ * `actions.length > 0` 判断圆桌决议是否有效，加上机械事实约束后立刻与后端不一致
+ * （后端认为无效、前端仍显示「可执行」）—— 同一个教训。
+ * **判定的唯一真相在服务端，前端只读不算。**
+ *
+ * ## 为什么是「两个维度 + 一个派生徽章」而不是单一标签
+ *
+ * 实测 10 轮真实运行的 38 条需求判定显示：机械层与需求层**互相独立**，
+ * 四个格子都真实出现过：
+ *
+ *   机械❌ 需求✅   —— 机械层失败但需求全达成（llm-4 8/0/0、llm-6 2/0/0）
+ *   机械✅ 需求❓   —— 机械层全过但需求确认不了（llm-9 0/2/0）
+ *   机械✅ 需求✅   —— 都过（llm-10）
+ *   机械❌ 需求❓   —— 都不过（其余多轮）
+ *
+ * 所以把两轴绑成一个标签一定是错的：
+ *   - 要求「complete 必须需求全 met」→ 修好机械✅需求❓ 那一格，
+ *     却会把机械❌需求✅ 变成「明明需求都达成了却报带债」；
+ *   - 保持现状 → 机械✅需求❓ 那一格继续是假绿灯（控制台会声称
+ *     「全部需求通过验证」，而 B1 其实说「确认不了」）。
+ *
+ * 正确做法：两个维度都如实报，另加这个**只在两轴都过时才亮**的徽章。
+ */
+export type DeliveryVerdict = {
+  /** 两轴都过：机械检查全过 **且** 所有 must 需求都确认达成。 */
+  fullyVerified: boolean;
+  /** 机械/流程维度：直接来自 delivery，不改语义。 */
+  mechanical: 'complete' | 'with-debt' | 'awaiting-human' | 'held' | 'unknown';
+  /** 需求维度。 */
+  requirements: 'verified' | 'unverified' | 'not-met' | 'no-requirements';
+  /** 逐条状态的可读汇总，界面直接渲染，不要自己再聚合一遍。 */
+  counts: { met: number; unverified: number; open: number; acceptedWithDebt: number; total: number };
+  /** 人类可读的一句话结论（界面直接显示，避免各写一份措辞）。 */
+  summary: string;
+};
+
+export function deriveVerdict(summary: RunSummary | null): DeliveryVerdict {
+  const statuses = summary?.requirementStatuses ?? [];
+  const counts = {
+    met: statuses.filter((r) => r.status === 'met').length,
+    unverified: statuses.filter((r) => r.status === 'unverified').length,
+    open: statuses.filter((r) => r.status === 'open').length,
+    acceptedWithDebt: statuses.filter((r) => r.status === 'accepted_with_debt').length,
+    total: statuses.length,
+  };
+
+  const mechanical: DeliveryVerdict['mechanical'] = summary?.delivery ?? 'unknown';
+
+  let requirements: DeliveryVerdict['requirements'];
+  if (counts.total === 0) requirements = 'no-requirements';
+  else if (counts.unverified > 0) requirements = 'unverified';
+  else if (counts.open > 0) requirements = 'not-met';
+  else requirements = 'verified';
+
+  const fullyVerified = mechanical === 'complete' && requirements === 'verified';
+
+  // 措辞也放在这里统一给：如果让各处自己拼，同一种状态会出现好几种说法。
+  let text: string;
+  if (mechanical === 'unknown') text = '尚未运行';
+  else if (mechanical === 'awaiting-human') text = '等待真人裁决，本次交付未完成';
+  else if (mechanical === 'held') text = '已被人类暂停';
+  else if (fullyVerified) text = `全部验证通过：机械检查全过 + ${counts.met}/${counts.total} 条需求确认达成`;
+  else if (mechanical === 'complete' && requirements === 'unverified') {
+    text = `机械检查全过，但有 ${counts.unverified} 条需求**确认不了**（查过了，不是没查）—— 这不等于需求已达成`;
+  } else if (mechanical === 'complete' && requirements === 'not-met') {
+    text = `机械检查全过，但有 ${counts.open} 条需求未达成`;
+  } else if (mechanical === 'complete' && requirements === 'no-requirements') {
+    text = '机械检查全过，但没有需求可供核对达成情况';
+  } else {
+    text = `带债交付：问题被记录后继续推进（需求确认达成 ${counts.met}/${counts.total}）`;
+  }
+
+  return { fullyVerified, mechanical, requirements, counts, summary: text };
+}
 
 export type ArtifactMetaView = {
   id: ArtifactId;
@@ -242,6 +324,9 @@ export class RunManager {
       // 「哪些约束真的被机械校验、哪些只是作为指令传给角色」——
       // 如果用户看不见这个区分，他会以为所有建议书都在被强制执行。
       directiveEnforcement: this.orchestrator?.directiveEnforcement ?? null,
+      // 「真·完整」判定在这里派生一次，前端只读不算。
+      // 理由见 deriveVerdict 的说明：判定规则有两个实现就会分叉。
+      verdict: deriveVerdict(this.summary),
     };
   }
 

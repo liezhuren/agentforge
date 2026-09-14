@@ -133,28 +133,54 @@ function Header({ state, connected, onDone }: { state: FullState; connected: boo
                   ? '已结束'
                   : '出错'}
         </span>
+        {/*
+          两个独立维度 + 一个服务端派生的徽章。
+          
+          **不要在这里重算判定**：`verdict` 是服务端算好的唯一真相。
+          这里只做「把服务端给的事实显示出来」，措辞也直接用 verdict.summary ——
+          如果各处自己拼措辞，同一种状态会出现好几种说法。
+          
+          这一块的文案之前是写死的（「完整交付 → 全部需求通过验证，无技术债」），
+          而实测出现过「唯一被判 complete 的那轮，恰好两条需求都确认不了」——
+          界面上写着「全部需求通过验证」，而 B1 说的是 uncertain。
+        */}
         {state.delivery && (
           <span
             className={`pill ${
-              state.delivery === 'complete' ? 'ok' : state.delivery === 'with-debt' ? 'warn' : ''
+              state.verdict?.fullyVerified
+                ? 'ok'
+                : state.delivery === 'with-debt' || state.verdict?.requirements === 'unverified'
+                  ? 'warn'
+                  : ''
             }`}
-            title={
-              state.delivery === 'complete'
-                ? '全部需求通过验证，无技术债'
-                : state.delivery === 'with-debt'
-                  ? '问题被记录后继续推进 —— 受影响需求的验收状态是 ACCEPTED_WITH_DEBT，而不是 met'
-                  : state.delivery === 'held'
-                    ? '被人类暂停'
-                    : '等待真人裁决'
-            }
+            title={state.verdict?.summary ?? '（服务端尚未给出判定）'}
           >
-            {state.delivery === 'complete'
-              ? '完整交付'
-              : state.delivery === 'with-debt'
-                ? '带债交付'
-                : state.delivery === 'held'
-                  ? '已暂停'
-                  : '待真人裁决'}
+            {state.verdict?.fullyVerified
+              ? '真·完整交付'
+              : state.delivery === 'complete'
+                ? '机械检查全过'
+                : state.delivery === 'with-debt'
+                  ? '带债交付'
+                  : state.delivery === 'held'
+                    ? '已暂停'
+                    : '待真人裁决'}
+          </span>
+        )}
+        {/* 需求维度单独显示 —— 这是与「机械检查」完全独立的一件事 */}
+        {state.verdict && state.verdict.counts.total > 0 && (
+          <span
+            className={`pill ${
+              state.verdict.requirements === 'verified'
+                ? 'ok'
+                : state.verdict.requirements === 'unverified'
+                  ? 'warn'
+                  : 'bad'
+            }`}
+            title={state.verdict.summary}
+          >
+            需求 {state.verdict.counts.met}/{state.verdict.counts.total}
+            {state.verdict.counts.unverified > 0 ? ` · 确认不了 ${state.verdict.counts.unverified}` : ''}
+            {state.verdict.counts.open > 0 ? ` · 未达成 ${state.verdict.counts.open}` : ''}
           </span>
         )}
         {state.runId && <code className="muted small">{state.runId}</code>}

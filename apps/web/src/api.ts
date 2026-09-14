@@ -237,6 +237,27 @@ export type FullState = {
     enforced: Array<{ directiveId: string; raw: string; rule: string; values: string[] }>;
     advisory: Array<{ directiveId: string; raw: string; reason: string }>;
   } | null;
+  /**
+   * 「这次交付到底算不算真的完成了」——**服务端派生，前端只读不算**。
+   *
+   * 与 `delivery` 是**两件事**：`delivery` 描述机械/流程维度，
+   * `requirements` 描述需求达成维度。实测两者互相独立（四个格子都真实出现过）：
+   *   - 机械❌ 需求✅（需求都达成了，但机械层失败）
+   *   - 机械✅ 需求❓（机械全过，但需求确认不了）
+   * 所以前端**不得**自己重算 `fullyVerified` —— 判定规则有两个实现必然分叉，
+   * 而分叉的表现就是界面与后端说法不一致。
+   */
+  verdict?: DeliveryVerdict;
+};
+
+export type DeliveryVerdict = {
+  /** 两轴都过：机械检查全过 且 所有 must 需求都确认达成。 */
+  fullyVerified: boolean;
+  mechanical: 'complete' | 'with-debt' | 'awaiting-human' | 'held' | 'unknown';
+  requirements: 'verified' | 'unverified' | 'not-met' | 'no-requirements';
+  counts: { met: number; unverified: number; open: number; acceptedWithDebt: number; total: number };
+  /** 人类可读的结论：界面直接显示，不要自己拼措辞。 */
+  summary: string;
 };
 
 // ── HTTP ───────────────────────────────────────────────────────────
