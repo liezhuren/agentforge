@@ -101,9 +101,21 @@ export const B1: Anchor = {
     let invalidEvidence = false;
     let checkedEvidence = 0;
 
+    /**
+     * 每条需求的判定结果，**显式记录**而不是靠「没有 finding」反推。
+     *
+     * 反推是不安全的：`met` 现在不产生任何 finding，所以「没有 finding」等价于 met ——
+     * 但这只是当前实现的巧合。将来 B1 多加一种 finding，反推就会**静默把
+     * 一个未知状态读成已达成**。显式记录没有这个风险。
+     *
+     * 这份记录是需求验收状态回写的唯一来源（见 orchestrator.syncRequirementStatuses）。
+     */
+    const outcomes: Array<{ requirementId: string; verdict: 'met' | 'not-met' | 'uncertain' | 'unverified' }> = [];
+
     for (const req of reqs) {
       const p = byId.get(req.id);
       if (!p) {
+        outcomes.push({ requirementId: req.id, verdict: 'unverified' });
         findings.push({
           code: 'requirement-unverified',
           severity: 'fail',
@@ -116,6 +128,7 @@ export const B1: Anchor = {
 
       if (p.evidenceRefs.length === 0) {
         invalidEvidence = true;
+        outcomes.push({ requirementId: req.id, verdict: 'unverified' });
         findings.push({
           code: 'evidence-missing',
           severity: 'fail',
@@ -135,6 +148,7 @@ export const B1: Anchor = {
 
       if (bad.length > 0) {
         invalidEvidence = true;
+        outcomes.push({ requirementId: req.id, verdict: 'unverified' });
         findings.push({
           code: 'evidence-invalid',
           severity: 'fail',
@@ -144,6 +158,9 @@ export const B1: Anchor = {
         });
         continue;
       }
+
+      // 到这里证据是真的，判定可以采信
+      outcomes.push({ requirementId: req.id, verdict: p.verdict });
 
       if (p.verdict === 'not-met') {
         findings.push({
@@ -177,6 +194,8 @@ export const B1: Anchor = {
         proposed: proposals.length,
         evidenceChecked: checkedEvidence,
         invalidEvidence,
+        /** 逐条判定结果，供编排器回写 requirement.status。 */
+        outcomes,
       },
     };
   },

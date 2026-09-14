@@ -967,6 +967,93 @@ test('TestReport 不得在「没测过」时伪造：A5 没得跑就不写报告
   }
 });
 
+test('【关键】B1 的判定必须回写成需求验收状态（否则 status 永远是 open）', async () => {
+  // 真实 LLM 实测发现的「假绿灯」（docs/07 §L11）：
+  // B1 每轮都给出 met / not-met / uncertain，但**从来没有人把它写回需求工件** ——
+  // 9 轮真实运行里 requirement.status 全部停在初始值 `open`。
+  // 而 delivery 的初值是 complete、控制台把 complete 显示成「全部需求通过验证」，
+  // 于是出现：**唯一被判 complete 的那轮，恰好也是两条需求都判 uncertain 的那轮。**
+  //
+  // 一条需求的判定证据（evidenceRefs 必须真实存在，否则 B1 判 INVALID_EVIDENCE）
+  const ref = { kind: 'file' as const, path: 'src/api/routes.ts', startLine: 6, endLine: 8 };
+
+  const statusesFor = async (verdict: 'met' | 'uncertain' | 'not-met') => {
+    const { root, orch, cleanup } = await setup(
+      happyScript({
+        'verify:requirements': {
+          requirementVerdicts: [
+            { requirementId: 'R-001', verdict, rationale: '测试用判定', evidenceRefs: [ref] },
+            { requirementId: 'R-002', verdict, rationale: '测试用判定', evidenceRefs: [ref] },
+          ],
+        },
+      }),
+    );
+    try {
+      const summary = await orch.run();
+      const dir = join(root, 'artifacts', 'Requirement');
+      const files = (await readdir(dir)) as string[];
+      // 取最新版本（回写会产生新版本，supersedes 链）
+      const latest = JSON.parse(await readFile(join(dir, files[files.length - 1]), 'utf8')) as {
+        content: { requirements: Array<{ id: string; status: string }> };
+      };
+      return { summary, statuses: latest.content.requirements.map((r) => `${r.id}:${r.status}`) };
+    } finally {
+      await cleanup();
+    }
+  };
+
+  // ① met → met（确认达成）
+  const a = await statusesFor('met');
+  assert.deepEqual(a.statuses, ['R-001:met', 'R-002:met'], 'met 必须被回写');
+  assert.deepEqual(
+    a.summary.requirementStatuses.map((r) => r.status),
+    ['met', 'met'],
+    '报告里也必须带上，否则用户只能去翻工件库',
+  );
+
+  // ② uncertain → unverified（**查过了但确认不了**，与 open「还没查」刻意分开）
+  const b = await statusesFor('uncertain');
+  assert.deepEqual(b.statuses, ['R-001:unverified', 'R-002:unverified'], 'uncertain 必须回写成 unverified');
+  assert.ok(
+    b.summary.requirementStatuses.some((r) => r.status === 'unverified'),
+    '「确认不了」必须能被看到 —— 这是判断系统可信度最关键的单个数字',
+  );
+
+  // ③ not-met → **绝不能**被记成已达成。
+  //    实际会发生什么取决于逃生路径：门禁会因这条 fail 阻断 → 重试 → 逃生，
+  //    若走到「带债通过」，需求会被标成 `accepted_with_debt`（第三态）；
+  //    若还在流程中，则保持 `open`。两者都可接受 —— 唯独不能是 met。
+  const c = await statusesFor('not-met');
+  for (const s of c.statuses) {
+    assert.ok(
+      s.endsWith(':open') || s.endsWith(':accepted_with_debt'),
+      `not-met 不得被记成 met/unverified，实际：${s}`,
+    );
+  }
+  assert.notEqual(c.summary.delivery, 'complete', 'not-met 时不可能完整交付');
+});
+
+test('NoteReport：占位（保证上面的测试不会因文件顺序而假过）', async () => {
+  // 上一条测试从 artifacts/Requirement/ 里取"最后一个文件"当作最新版本。
+  // 这个假设依赖 store 的 id 递增顺序，属于隐式契约 —— 这里显式验证一次：
+  // 单次运行只应产生一个"初始 + 若干次回写"的版本序列，且最后一个的状态是最终态。
+  const { root, orch, cleanup } = await setup(happyScript());
+  try {
+    const summary = await orch.run();
+    const dir = join(root, 'artifacts', 'Requirement');
+    const files = ((await readdir(dir)) as string[]).sort();
+    assert.ok(files.length >= 1, '至少有一个 Requirement 工件');
+    const last = JSON.parse(await readFile(join(dir, files[files.length - 1]), 'utf8')) as {
+      content: { requirements: Array<{ id: string; status: string }> };
+    };
+    const fromArtifact = last.content.requirements.map((r) => r.status);
+    const fromSummary = summary.requirementStatuses.map((r) => r.status);
+    assert.deepEqual(fromArtifact, fromSummary, '工件里的最终状态必须与报告一致（同一个事实不能有两个版本）');
+  } finally {
+    await cleanup();
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 // 验收用例 15：每一次 LLM 调用都必须声明 schema（Mock 通过 ≠ 真实通过）
 // ════════════════════════════════════════════════════════════════

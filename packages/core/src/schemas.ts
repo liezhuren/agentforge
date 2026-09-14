@@ -130,7 +130,8 @@ export const requirementSchema: JsonSchema = {
     text: { type: 'string', minLength: 5 },
     acceptance: { type: 'array', minItems: 1, items: { type: 'string', minLength: 3 } },
     priority: { type: 'string', enum: ['must', 'should', 'could'] },
-    status: { type: 'string', enum: ['open', 'accepted_with_debt', 'met'] },
+    // unverified = 查过了但确认不了（与 open「还没查」刻意分开，见 types.ts 的说明）
+    status: { type: 'string', enum: ['open', 'unverified', 'accepted_with_debt', 'met'] },
     origin: { type: 'string', enum: ['user', 'pm', 'directive'] },
   },
 };

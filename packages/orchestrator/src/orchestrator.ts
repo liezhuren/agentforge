@@ -119,6 +119,15 @@ export type RunSummary = {
   techDebtRequirements: string[];
   /** 建议书执行情况：哪些被编译成强制约束、哪些只能作为角色指令（无法机械校验）。 */
   directiveEnforcement: DirectiveEnforcementReport | null;
+  /**
+   * 逐条需求的最终验收状态。
+   *
+   * 必须出现在报告里（而不是只躺在工件库里）：
+   * `delivery` 表达的是「流程与机械检查」，`requirementStatuses` 表达的是
+   * 「需求到底确认了没有」——**这是两件不同的事**，混在一个标签里就会产生假绿灯
+   * （实测：唯一被判 complete 的那轮，两条需求都是「确认不了」）。
+   */
+  requirementStatuses: Array<{ id: string; status: string }>;
 };
 
 export class Orchestrator {
@@ -140,6 +149,13 @@ export class Orchestrator {
   private lastResolutionValid: boolean | null = null;
   /** 上一轮硬失败签名，用于识别「修复无效」。见 RETRY_ROLE 分支的说明。 */
   private lastHardFailureSignature: string | null = null;
+  /**
+   * 最近一次回写后的需求验收状态。
+   *
+   * 存在的意义是让「有多少需求是我们**确认不了**的」变成一个随时可读的数字 ——
+   * 在此之前，需求状态永远停在 `open`，这个信息在系统里根本不存在。
+   */
+  private lastRequirementStatuses: Array<{ id: string; status: string }> = [];
   /** 建议书的执行情况：哪些被编译成强制约束、哪些只能作为指令。 */
   private enforcement: DirectiveEnforcementReport | null = null;
   private judgeCommandPolicy: import('../../core/src/exec.ts').CommandPolicy;
@@ -363,6 +379,9 @@ export class Orchestrator {
         // 所以 B2 的 deliverable-missing 会在当轮报出、下一轮消失，这是符合预期的。
         await this.publishTestReport(gateOut.anchors);
 
+        // 把 B1 的逐条判定回写成需求验收状态。
+        await this.syncRequirementStatuses(gateOut.anchors);
+
         const action = gateOut.nextAction;
 
         if (action.kind === 'HOLD') {
@@ -523,12 +542,14 @@ export class Orchestrator {
       delivery,
       techDebtRequirements: this.debtRequirements,
       directiveEnforcement: this.enforcement,
+      requirementStatuses: this.lastRequirementStatuses,
     };
     this.bus.emit({ t: 'run.finished', stage, techDebt: this.debtIds.length, delivery });
     await this.log?.append('run.finished', {
       finalStage: stage,
       delivery,
       cycles: this.cycle,
+      requirementStatuses: this.lastRequirementStatuses,
       debt: this.debtIds.length,
     });
     return summary;
@@ -1184,6 +1205,58 @@ export class Orchestrator {
       // 写不进去不该让 run 崩掉：B2 会如实报 deliverable-missing，
       // 那是一个诚实的结果，比崩溃好。
       this.logger.warn(`TestReport 固化失败：${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 把 B1 的逐条判定回写成 `requirement.status`。
+   *
+   * ## 为什么必须做（真实 LLM 实测发现的「假绿灯」，docs/07 §L11）
+   *
+   * B1 每轮都会给出 `met / not-met / uncertain`，但**从来没有人把它写回需求工件**。
+   * 实测 9 轮真实运行，`requirement.status` 全部停留在初始值 `open` ——
+   * 一个存在、有 schema、有 `met` 枚举值、却永远不变化的字段。
+   *
+   * 而 `delivery` 的初值是 `'complete'`，控制台把 complete 显示成
+   * 「完整交付 = 全部需求通过验证」。于是出现了一个很说明问题的组合：
+   * **9 轮里唯一被判「完整交付」的那轮，恰好也是 B1 对两条需求都判 `uncertain` 的那轮。**
+   *
+   * 这一条只负责「让事实可见」，**不改变交付判定** ——
+   * 严格化（未确认就不许叫 complete）是另一个决定，应当基于真实数据再拍板，
+   * 而不是顺手一起改（那会让交付语义变动与数据可见性变动混在一起，无法归因）。
+   *
+   * 映射规则：
+   *   `met`                        → `met`
+   *   `uncertain` / 证据无效 / 无判定 → `unverified`（**查过但确认不了**）
+   *   `not-met`                    → 保持 `open`（确认没做到就是还没做到）
+   */
+  private async syncRequirementStatuses(anchors: AnchorRunResult[]): Promise<void> {
+    const b1 = anchors.find((a) => a.anchorId === 'B1');
+    if (!b1) return;
+
+    const meta = b1.meta as
+      | { outcomes?: Array<{ requirementId: string; verdict: 'met' | 'not-met' | 'uncertain' | 'unverified' }> }
+      | undefined;
+    const outcomes = meta?.outcomes ?? [];
+    if (outcomes.length === 0) return;
+
+    const updates = outcomes
+      .filter((o) => o.verdict === 'met' || o.verdict === 'uncertain' || o.verdict === 'unverified')
+      .map((o) => ({ id: o.requirementId, status: o.verdict === 'met' ? ('met' as const) : ('unverified' as const) }));
+
+    if (updates.length === 0) return;
+
+    try {
+      const art = await this.store.markRequirementsStatus(updates);
+      const statuses = (art?.content as { requirements?: Array<{ id: string; status: string }> } | undefined)?.requirements ?? [];
+      this.lastRequirementStatuses = statuses.map((r) => ({ id: r.id, status: r.status }));
+      await this.log?.append('requirement.status.synced', {
+        updates,
+        statuses: this.lastRequirementStatuses,
+      });
+    } catch (err) {
+      // 回写失败不该让 run 崩掉；但必须留痕，否则「状态没被更新」会被误读成「需求没达成」
+      this.logger.warn(`需求验收状态回写失败：${(err as Error).message}`);
     }
   }
 

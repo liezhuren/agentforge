@@ -167,7 +167,21 @@ export type Requirement = {
   /** 可验证性：每条需求必须声明如何验证，否则 B2 预检打回。 */
   acceptance: string[];
   priority: 'must' | 'should' | 'could';
-  status: 'open' | 'accepted_with_debt' | 'met';
+  /**
+   * 验收状态。四个值各有明确含义，**刻意不合并**：
+   *
+   *   `open`                —— 尚未确认达成。B1 判 `not-met` 时也留在这里
+   *                            （「确认没做到」就是「还没做到」，不需要第五个状态）
+   *   `unverified`          —— **查过了，但确认不了**（B1 判 uncertain / 证据无效 / 没有判定）
+   *   `met`                 —— 已确认达成（有真实证据支撑）
+   *   `accepted_with_debt`  —— 明知未达成仍放行（第三层逃生）
+   *
+   * `unverified` 与 `open` 分开是刻意设计（真实 LLM 实测补上，docs/07 §L11）：
+   * 「还没查」和「查了但说不清」是两种完全不同的处境。
+   * 混在一起，就没人能回答「到底有多少需求是我们**确认不了**的」——
+   * 而那恰恰是判断这套系统可信度最关键的单个数字。
+   */
+  status: 'open' | 'unverified' | 'accepted_with_debt' | 'met';
   origin: 'user' | 'pm' | 'directive';
 };
 

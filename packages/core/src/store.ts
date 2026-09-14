@@ -187,41 +187,51 @@ export class ArtifactStore {
   }
 
   /**
-   * 把受影响需求标记为 ACCEPTED_WITH_DEBT（第三层死锁逃生的记账动作）。
+   * 受控地回写需求**验收状态**（除 status 外不得改动任何字段）。
    *
-   * 这是写权限矩阵里**唯一一处受控例外**（orchestrator 可写 Requirement）。
-   * 为把例外收窄到最小，这里做严格自检：除 `status` 之外的任何字段发生变化都抛错。
-   * 也就是说编排器只能改「这条需求是否带债」，不能改需求本身的文字或验收方式。
+   * 为什么需要它（真实 LLM 实测，docs/07 §L11）：
+   * B1（目标达成锚点）每轮都会给出 `met / not-met / uncertain` 的判定，
+   * 但**从来没有人把这个结果写回需求工件** —— 于是 9 轮真实运行里
+   * `requirement.status` 全部停留在初始值 `open`。
+   *
+   * 后果不是「少了一个字段」，而是**假绿灯**：
+   * `delivery` 的初值是 `'complete'`，控制台把它显示成
+   * 「完整交付 = 全部需求通过验证」—— 而 llm-9 恰好是唯一被判 complete 的那轮，
+   * 也是 B1 对两条需求**都判 uncertain** 的那轮。
+   *
+   * 一个存在、有 schema、有 `met` 枚举值、却永远不变化的字段，
+   * 比没有这个字段更危险：它看起来像是被用过的。
+   *
+   * 与 `markRequirementsDebt` 共用同一套自检，因为它们是同一类动作：
+   * 编排器只能改「这条需求的验收状态」，不能改需求文字或验收方式。
    */
-  async markRequirementsDebt(requirementIds: string[]): Promise<Artifact | null> {
+  async markRequirementsStatus(
+    updates: Array<{ id: string; status: RequirementDoc['requirements'][number]['status'] }>,
+  ): Promise<Artifact | null> {
     const head = this.head('Requirement');
     if (!head) return null;
 
-    const ids = new Set(requirementIds);
+    const byId = new Map(updates.map((u) => [u.id, u.status]));
     const oldContent = head.content as { requirements: Array<Record<string, unknown>> };
     const newRequirements = oldContent.requirements.map((r) => {
-      if (!ids.has(String(r.id))) return r;
-      return { ...r, status: 'accepted_with_debt' };
+      const next = byId.get(String(r.id));
+      return next === undefined ? r : { ...r, status: next };
     });
 
     // 自检：除 status 外不得有任何变化
     for (let i = 0; i < oldContent.requirements.length; i++) {
       const before = { ...oldContent.requirements[i] };
       const after = { ...newRequirements[i] };
-      const beforeStatus = before.status;
       delete before.status;
       delete after.status;
       if (stableStringify(before) !== stableStringify(after)) {
         throw new Error(
-          `markRequirementsDebt 只允许修改 status 字段；需求 ${String(oldContent.requirements[i].id)} 的其它字段被改动了`,
+          `markRequirementsStatus 只允许修改 status 字段；需求 ${String(oldContent.requirements[i].id)} 的其它字段被改动了`,
         );
       }
-      void beforeStatus;
     }
 
-    const changed = newRequirements.some(
-      (r, i) => r.status !== oldContent.requirements[i].status,
-    );
+    const changed = newRequirements.some((r, i) => r.status !== oldContent.requirements[i].status);
     if (!changed) return head;
 
     return this.put({
@@ -231,6 +241,17 @@ export class ArtifactStore {
       content: { requirements: newRequirements },
       supersedes: head.id,
     });
+  }
+
+  /**
+   * 把受影响需求标记为 ACCEPTED_WITH_DEBT（第三层死锁逃生的记账动作）。
+   *
+   * 这是写权限矩阵里**唯一一处受控例外**（orchestrator 可写 Requirement）。
+   * 为把例外收窄到最小，这里做严格自检：除 `status` 之外的任何字段发生变化都抛错。
+   * 也就是说编排器只能改「这条需求是否带债」，不能改需求本身的文字或验收方式。
+   */
+  async markRequirementsDebt(requirementIds: string[]): Promise<Artifact | null> {
+    return this.markRequirementsStatus(requirementIds.map((id) => ({ id, status: 'accepted_with_debt' as const })));
   }
 
   // ── 读取 ──────────────────────────────────────────────────────

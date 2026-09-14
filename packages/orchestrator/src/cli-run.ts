@@ -255,6 +255,33 @@ export async function runCli(io: CliIO): Promise<number> {
             : `${C.yellow}等待真人裁决${C.reset}`
     }   ${C.dim}最终阶段 ${summary.finalStage}，${summary.totalCycles} 次 Gate${C.reset}`,
   );
+
+  // ── 需求到底确认了没有（与「交付状态」是两件事）────────────────────
+  //
+  // 这一行存在的理由：`delivery: complete` 表达的是「流程走完 + 机械检查通过」，
+  // 它**不**表达「需求达成」。实测出现过「唯一被判 complete 的那轮，
+  // 恰好两条需求都判定不了」——把两件事混在一个标签里就是假绿灯。
+  // 所以必须把需求状态单独、显式地打出来。
+  if (summary.requirementStatuses.length > 0) {
+    const by = (s: string) => summary.requirementStatuses.filter((r) => r.status === s).map((r) => r.id);
+    const met = by('met');
+    const unverified = by('unverified');
+    const open = by('open');
+    const debt = by('accepted_with_debt');
+    const color = unverified.length > 0 || open.length > 0 ? C.yellow : C.green;
+    out(
+      `  需求验收：${color}确认达成 ${met.length}/${summary.requirementStatuses.length}${C.reset}` +
+        (unverified.length ? `  ${C.yellow}确认不了：${unverified.join(', ')}${C.reset}` : '') +
+        (open.length ? `  ${C.dim}未达成：${open.join(', ')}${C.reset}` : '') +
+        (debt.length ? `  ${C.yellow}带债：${debt.join(', ')}${C.reset}` : ''),
+    );
+    if (unverified.length > 0) {
+      out(
+        `  ${C.yellow}注意：这 ${unverified.length} 条需求是「查过了但确认不了」，不是「还没查」。` +
+          `交付状态里的「完整」只描述机械检查，不代表需求已达成。${C.reset}`,
+      );
+    }
+  }
   const l = summary.ledger;
   out(
     `  主理人：precision ${(l.precision * 100).toFixed(0)}%  真报 ${l.truePositives}  误报 ${l.falsePositives}  不可证伪 ${l.unfalsifiable}  观察期 ${l.probation ? '是' : '否'}`,
