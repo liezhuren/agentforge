@@ -93,6 +93,67 @@ export type SemanticVerifierOptions = {
   model?: string;
 };
 
+/**
+ * 把确定性锚点（A1–A7）的最新结论渲染成一段紧凑的「事实」文本。
+ *
+ * 只取对「判断需求是否达成」有用、且**模型无法自己编出来**的字段：
+ * 真实退出码、真实通过/失败数、真实 HTTP 状态码、失败用例名。
+ * `stdoutTail` / `treeHash` 这类内部字段不渲染（既占 token 又与判定无关）。
+ *
+ * 必须以「事实」而非「结论」的口吻呈现 —— 所以结尾明确写了
+ * 「机械通过 ≠ 需求达成」，避免验证者把它当成可以直接抄的答案。
+ */
+function renderAnchorFacts(ctx: RoleContext): string | null {
+  const IDS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'] as const;
+  const META_KEYS = [
+    'exitCode',
+    'command',
+    'passed',
+    'failed',
+    'failing',
+    'httpStatus',
+    'healthUrl',
+    'errorCount',
+    'endpoints',
+    'missing',
+    'calledPaths',
+    'declared',
+    'registry',
+  ] as const;
+
+  const lines: string[] = [];
+  for (const id of IDS) {
+    const r = ctx.store.latestAnchorRun(id);
+    if (!r) continue;
+
+    const meta = (r.meta ?? {}) as Record<string, unknown>;
+    const bits: string[] = [];
+    for (const k of META_KEYS) {
+      if (meta[k] === undefined) continue;
+      const v = JSON.stringify(meta[k]);
+      bits.push(`${k}=${v.length > 200 ? v.slice(0, 200) + '…' : v}`);
+    }
+
+    const shown = [...r.findings.filter((f) => f.severity === 'fail'), ...r.findings.filter((f) => f.severity === 'warn')].slice(0, 3);
+    const detail = shown.length
+      ? ' | ' + shown.map((f) => `[${f.severity}] ${f.code}: ${f.message.slice(0, 160)}`).join(' | ')
+      : '';
+
+    lines.push(`${id} [${r.verdict}] ${r.method}${bits.length ? ' — ' + bits.join(' ') : ''}${detail}`);
+  }
+
+  if (lines.length === 0) return null;
+
+  return [
+    '--- 机械检查事实（确定性锚点产出，可直接引用；这是事实不是结论）---',
+    ...lines,
+    '注意：机械检查通过 **不等于** 需求达成 —— A 层检查的是「代码是否自洽」' +
+      '（包真实、符号存在、能编译、测试能跑、服务能起、契约一致），' +
+      '它不判断「需求描述的行为是否真的被实现」。上面这些字段（退出码、通过数、' +
+      'HTTP 状态码、失败用例名）是你可以引用的事实；判断仍由你来做。',
+  ].join('\n');
+}
+
 export class SemanticVerifier {
   private provider: LlmProvider;
   private maxAttempts: number;
@@ -133,6 +194,20 @@ export class SemanticVerifier {
         blocks.push(`--- ${a.id} (${a.kind}${a.scope ? `/${a.scope}` : ''}) ---\n${JSON.stringify(a.content, null, 2).slice(0, 8000)}`);
       }
     }
+
+    // ── 机械检查事实 ──────────────────────────────────────────
+    //
+    // 为什么要把锚点结果也给它（真实 LLM 实测，docs/07 §L12）：
+    // 验证者抱怨它缺的东西里，「npm run typecheck 退出码」「HTTP 状态码与响应体」
+    // 这两类**系统早就测过了** —— A4 跑过真 tsc、A6 真的起服务打过 HTTP 探针，
+    // 结果就存在锚点运行记录里。但它只被喂了**工件**，看不到锚点结果，
+    // 于是只能如实报「无法确认」。
+    //
+    // 这不是放宽标准：给的是**事实**，不是结论。判断「需求是否达成」仍然是它的事，
+    // 而且下面明确写了「机械通过 ≠ 需求达成」—— A 层检查的是「代码是否自洽」，
+    // 不是「需求是否实现」。
+    const anchorFacts = renderAnchorFacts(ctx);
+    if (anchorFacts) blocks.push(anchorFacts);
 
     const baseMessages = [
       {

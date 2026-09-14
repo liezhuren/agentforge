@@ -1054,6 +1054,42 @@ test('NoteReport：占位（保证上面的测试不会因文件顺序而假过�
   }
 });
 
+test('【关键】验证器的上下文必须包含机械检查事实（否则它只能报「确认不了」）', async () => {
+  // 真实 LLM 实测（docs/07 §L12）：45% 的需求判定落在 uncertain，
+  // 而验证器给出的理由高度一致 —— 它缺的东西里有两类**系统早就测过了**：
+  //   「npm run typecheck 退出码」      → A4 真的跑过 tsc
+  //   「HTTP 状态码与响应体」            → A6 真的起服务打过探针
+  // 只是这些事实存在锚点运行记录里，而它只被喂了**工件**。
+  //
+  // 隔离重放实测：补上这块之后，llm-11 的两条需求从 uncertain 变成 met，
+  // 且理由里明确引用了 A4/A5/A6 的字段 —— 而那次交付是**真的**（独立验证过
+  // 真 tsc 退出 0、7 个测试全过、/health 200、POST 201、写后读一致）。
+  // 也就是说：之前的 uncertain 是假阴性，这个修复把假阴性变成了正确的正例。
+  const { provider, orch, cleanup } = await setup(happyScript());
+  try {
+    await orch.run();
+
+    const verifyCall = provider.calls.find((c) => c.purpose === 'verify:requirements');
+    assert.ok(verifyCall, '应当发起过一次 verify:requirements');
+    const prompt = verifyCall.lastUserMessage;
+
+    assert.ok(prompt.includes('机械检查事实'), '上下文里必须有这一块');
+    // 具体到「模型编不出来」的字段
+    assert.ok(/A4 \[PASS\]/.test(prompt), `应当包含 A4 的结论与退出码：${prompt.slice(0, 200)}`);
+    assert.ok(prompt.includes('exitCode'), '必须给真实退出码（这是它反复说缺的东西）');
+    assert.ok(/A5 \[PASS\]/.test(prompt), '应当包含 A5 的测试执行结果');
+    assert.ok(prompt.includes('passed'), '必须给真实通过数');
+
+    // 关键：必须说明「机械通过 ≠ 需求达成」，否则验证者会直接抄结论
+    assert.ok(
+      prompt.includes('不等于') && prompt.includes('需求达成'),
+      '必须明确告诉它这是事实不是结论 —— 否则它会把 A 层 PASS 直接当成需求 met',
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 // 验收用例 15：每一次 LLM 调用都必须声明 schema（Mock 通过 ≠ 真实通过）
 // ════════════════════════════════════════════════════════════════
