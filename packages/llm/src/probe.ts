@@ -275,7 +275,34 @@ export async function probeJsonSchemaMode(
   if (opts.cache && !opts.force) {
     const hit = await opts.cache.get(key);
     // 兼容旧版本缓存（没有 conclusive 字段）
-    if (hit) return { ...hit, live: false, conclusive: hit.conclusive ?? true };
+    if (hit) {
+      /**
+       * ⚠️ **缓存命中时也必须把结论写回 Provider。**
+       *
+       * 写回原本只发生在 `finish()` 里（即**真的探测过**的那条路径），
+       * 缓存命中这条 early return 漏掉了 —— 于是 provider 停在配置里的 `auto`，
+       * 而 `auto` 在 OpenAiCompatProvider 里解析成 `strict`。
+       *
+       * 后果很严重，而且只在特定场景出现，所以 11 轮真实运行全都没碰到：
+       *   - 每次开**新工作区**跑 → 缓存是冷的 → 真探测 → 写回正确 → 一切正常
+       *   - **在同一工作区重跑** → 缓存命中 → 不写回 → 停在 strict →
+       *     端点若不支持严格模式（deepseek 就是），**每一次结构化调用都 400**
+       *
+       * 也就是「用户有一个项目、反复对它跑」这个最常规的用法会直接崩掉。
+       * 而 §G1 早就记过同一条教训：「探测成功、真实调用 400」的错位必须靠写回避免 ——
+       * 那次修复只覆盖了真探测路径。
+       *
+       * 只写回「可用且非致命」的结论：不可达/致命时不该把一个坏结论应用到 provider 上
+       * （那种情况由 buildLlm 抛 LlmSetupError 处理）。
+       */
+      if (hit.reachable && !hit.fatal) {
+        provider.setJsonMode(hit.jsonSchema);
+        if (hit.jsonSchema === 'strict') {
+          provider.setStrictSchemaMode(hit.strictNeedsSanitize ? 'sanitize' : 'as-is');
+        }
+      }
+      return { ...hit, live: false, conclusive: hit.conclusive ?? true };
+    }
   }
 
 

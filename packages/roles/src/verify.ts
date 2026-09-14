@@ -15,6 +15,7 @@ import type { Logger } from '../../core/src/logger.ts';
 import { silentLogger } from '../../core/src/logger.ts';
 import type { LlmProvider } from '../../llm/src/types.ts';
 import type { RoleContext } from './types.ts';
+import { READ_PERMISSIONS } from './types.ts';
 
 /** 提议的输出 schema。注意 evidenceRefs 至少一条 —— 没证据的判定在 B1 处会作废。 */
 export const requirementVerdictsSchema: JsonSchema = {
@@ -113,9 +114,21 @@ export class SemanticVerifier {
 
     const reqs = (reqArt.content as { requirements: Array<Record<string, unknown>> }).requirements;
 
-    // 只把「有权读」的工件渲染进上下文（与 LlmRoleRunner 同一套读权限纪律）
+    // ── 只把「有权读」的工件渲染进上下文 ──────────────────────────
+    //
+    // 这里原本是一份**硬编码**的 kind 列表，而注释却写着「与 LlmRoleRunner
+    // 同一套读权限纪律」—— 实际上它并没有跟随矩阵，两者已经漂移，
+    // 而漂移的后果是实打实的（真实 LLM 实测，docs/07 §L12）：
+    //
+    // 列表里没有 TestReport，于是「测试到底跑没跑过、退出码多少、过了几条」
+    // 这些**系统本来就有的事实**从未进入验证者的视野。而它的系统提示写着
+    // 「只能引用你确实看到的工件；没看到就填 uncertain 并说明缺什么」——
+    // 它就如实报了 45% 的 uncertain，理由每一轮都一样。
+    //
+    // 现在直接读矩阵：**声明与实现之间不再有第二份清单可以漂移**。
+    const role = 'test' as const; // 语义验证器以 test 角色身份运行
     const blocks: string[] = [];
-    for (const kind of ['Requirement', 'PRD', 'TaskGraph', 'Contract', 'CodeModule', 'TestSuite'] as const) {
+    for (const kind of READ_PERMISSIONS[role]) {
       for (const a of ctx.store.heads(kind)) {
         blocks.push(`--- ${a.id} (${a.kind}${a.scope ? `/${a.scope}` : ''}) ---\n${JSON.stringify(a.content, null, 2).slice(0, 8000)}`);
       }

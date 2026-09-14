@@ -762,6 +762,91 @@ test('录制：必须记录「这次调用有没有声明结构化输出契约�
   }
 });
 
+test('【关键】缓存命中时也必须把探测结论写回 Provider（否则重跑同一工作区会 400）', async () => {
+  // 真实 LLM 实测发现的严重缺陷（docs/07 §L13）。
+  //
+  // 写回原本只发生在 finish() 里 —— 也就是**真的探测过**的那条路径。
+  // 缓存命中那条 early return 漏了写回，于是 provider 停在配置里的 `auto`，
+  // 而 auto 在 OpenAiCompatProvider 里解析成 `strict`。
+  //
+  // 为什么 11 轮真实运行都没碰到：每次都开新工作区 ⇒ 缓存是冷的 ⇒ 真探测 ⇒ 写回正确。
+  // 但「用户有一个项目、反复对它跑」这个**最常规的用法**会直接崩：
+  // 缓存命中 → 停在 strict → 端点若不支持严格模式，每一次结构化调用都 400。
+  const dir = await mkdtemp(join(tmpdir(), 'af-capwb-'));
+  try {
+    const cache = new FileCapabilityCache(dir);
+    await cache.set(probeCacheKey('fake', 'http://127.0.0.1:1/v1', 'fake-model'), {
+      provider: 'fake',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      model: 'fake-model',
+      jsonSchema: 'json-mode',
+      reachable: true,
+      conclusive: true,
+      evidence: ['（来自上次运行的缓存）'],
+      strictNeedsSanitize: false,
+      live: true,
+      probedAt: new Date().toISOString(),
+    });
+
+    const p = new OpenAiCompatProvider({
+      name: 'fake',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'k',
+      defaultModel: 'fake-model',
+      jsonMode: 'auto', // 配置里是 auto
+      maxRetries: 1,
+    });
+    assert.equal(p.jsonMode, 'auto', '前置条件：provider 初始是 auto');
+
+    const out = await probeJsonSchemaMode(p, { cache });
+
+    assert.equal(out.live, false, '应当命中缓存、不发请求');
+    assert.equal(out.jsonSchema, 'json-mode');
+    assert.equal(
+      p.jsonMode,
+      'json-mode',
+      '缓存命中也必须写回 —— 否则 provider 停在 auto（= strict），重跑同一工作区的每次调用都会 400',
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('缓存命中的写入不得把「不可用」的结论应用到 Provider 上', async () => {
+  // 只写回「可用且非致命」的结论。把坏结论应用到 provider 上会让后续调用
+  // 带着错误的模式继续跑；真正该做的是让 buildLlm 抛 LlmSetupError。
+  const dir = await mkdtemp(join(tmpdir(), 'af-capwb2-'));
+  try {
+    const cache = new FileCapabilityCache(dir);
+    await cache.set(probeCacheKey('fake', 'http://127.0.0.1:1/v1', 'fake-model'), {
+      provider: 'fake',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      model: 'fake-model',
+      jsonSchema: 'strict',
+      reachable: false,
+      conclusive: true,
+      evidence: ['上次探测：端点不可达'],
+      strictNeedsSanitize: false,
+      fatal: { kind: 'unreachable', message: '上次探测：端点不可达' },
+      live: true,
+      probedAt: new Date().toISOString(),
+    });
+
+    const p = new OpenAiCompatProvider({
+      name: 'fake',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'k',
+      defaultModel: 'fake-model',
+      jsonMode: 'json-mode',
+      maxRetries: 1,
+    });
+    await probeJsonSchemaMode(p, { cache });
+    assert.equal(p.jsonMode, 'json-mode', '致命结论不得写回，应保持原配置');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 // 预算
 // ════════════════════════════════════════════════════════════════
