@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type {
+  AnchorRunResult,
   ArtifactId,
   AnchoredReviewDoc,
   DirectiveRecord,
@@ -27,6 +28,7 @@ import type {
   RoleId,
   RoundtableResolution,
   StageId,
+  TestReportDoc,
   WorkOrder,
 } from '../../core/src/types.ts';
 import { DEFAULT_HOST_POLICY } from '../../core/src/types.ts';
@@ -353,6 +355,14 @@ export class Orchestrator {
         trace.nextActions.push(describeAction(gateOut.nextAction));
         this.workOrders.push(...gateOut.workOrders);
 
+        // 把 A5 的真实执行结果固化成 TestReport 工件。
+        //
+        // 必须在 gate 之后：A5 是**在 gate 里**才真的跑测试的，
+        // 它的观测结果是这份报告唯一诚实的来源。
+        // 放在这里意味着「本轮的测试事实要在下一轮 Gate 才可见」——
+        // 所以 B2 的 deliverable-missing 会在当轮报出、下一轮消失，这是符合预期的。
+        await this.publishTestReport(gateOut.anchors);
+
         const action = gateOut.nextAction;
 
         if (action.kind === 'HOLD') {
@@ -451,6 +461,15 @@ export class Orchestrator {
 
         if (action.kind === 'ROUNDTABLE') {
           trace.finalAction = `ROUNDTABLE(${action.trigger})`;
+
+          // 圆桌之前也要记下本轮硬失败签名。
+          //
+          // 踩过的坑（真实 LLM 实测，docs/07 §L10）：签名原本**只在 RETRY_ROLE 分支**
+          // 更新，圆桌分支从不更新 ⇒ 圆桌之后的下一轮拿当前签名去比一个**过期值**，
+          // 「签名未变」永远不成立 ⇒ Gate 里那道「不为没变化的失败反复开会」的闸门失效
+          // ⇒ 实测一个阶段连开 7 次 T4 圆桌，直到撞上阶段循环上限。
+          this.lastHardFailureSignature = gateOut.hardFailureSignature;
+
           const rt = await this.holdRoundtable(action.trigger, gateOut);
           if (rt === 'resolved') continue;
           if (rt === 'HOLD') {
@@ -839,7 +858,7 @@ export class Orchestrator {
       ]),
     );
 
-    const result = await session.run(speakers, async (statements, ag, facts) => {
+    const result = await session.run(speakers, async (statements, ag, facts, retryHint) => {
       const sustained = facts.filter((f) => f.outcome === 'sustained');
       const refuted = facts.filter((f) => f.outcome === 'refuted');
       const res = await this.o.provider.complete({
@@ -859,6 +878,13 @@ export class Orchestrator {
               (sustained.length > 0
                 ? '注意：有些主张已被**当场执行的 falsifier 机械证实**，你的归因必须落在它们指向的角色上' +
                   '（或明确写 SHARED），不得与机械证据矛盾。'
+                : '') +
+              // 结构化重试：把上一次**具体的**校验错误回喂，而不是让模型盲改。
+              // 校验不过时整份决议会作废并升级真人，所以这一次修正机会很值钱。
+              (retryHint
+                ? `\n\n【上一次的决议被判无效，原因如下 —— 请针对性修正后重新输出完整决议】\n${retryHint}\n` +
+                  '提示：验收条件必须含一个可被程序检查的抓手（命令、文件路径、端点、锚点编号、' +
+                  '具体的字段名，或明确的数值/数量断言）。反之，「提升质量」这类无法核验的措辞会被直接拒绝。'
                 : ''),
           },
           {
@@ -904,6 +930,7 @@ export class Orchestrator {
       facts: result.facts,
       falsifiersRun: result.falsifiersRun,
       discardedStatements: result.discardedStatements,
+      resolutionAttempts: result.resolutionAttempts,
     });
     await this.log?.append('roundtable.closed', {
       minuteId: minuteArt.id,
@@ -1090,6 +1117,74 @@ export class Orchestrator {
       test: next.profile.test,
       notes: next.notes ?? [],
     });
+  }
+
+  /**
+   * 把 A5 的**真实执行结果**固化成 `TestReport` 工件。
+   *
+   * 为什么必须由编排器做（而不是让 test 角色写）：
+   * TestReport 的字段是 `command / exitCode / passed / failed / failing` —— 全是执行事实。
+   * 让 LLM 写这些，只会得到一个「看起来合理的编造值」，那正是本项目要消灭的东西。
+   * 唯一诚实的来源是真的跑过一次测试的那个锚点。
+   *
+   * 为什么必须有这个工件（真实 LLM 实测发现的系统性假失败，docs/07 §L8）：
+   * PM 的任务图自然会声明「测试任务交付 TestReport」，而 B2 锚点会拿声明的交付物
+   * 去核对工件库。此前**没有任何代码路径产出过 TestReport**，
+   * 于是 B2 必定报 deliverable-missing，派出的工单又无法通过重试修复
+   * （因为缺的不是角色的产出，是编排层没做这件事）—— 项目因此必然带债。
+   *
+   * 纪律：只在 A5 真的执行过测试时才写。A5 报 SKIPPED / 命令起不来时，
+   * 我们**没有**执行事实可固化，此时宁可不产出工件，也不写一份空报告 ——
+   * 「没测过」不能被写成一份看起来测过的报告。
+   */
+  private async publishTestReport(anchors: AnchorRunResult[]): Promise<void> {
+    const a5 = anchors.find((a) => a.anchorId === 'A5');
+    if (!a5 || a5.verdict === 'SKIPPED' || a5.verdict === 'INVALID_EVIDENCE') return;
+
+    const meta = a5.meta as
+      | {
+          exitCode?: number;
+          command?: string;
+          passed?: number;
+          failed?: number;
+          failing?: Array<{ name: string; message: string }>;
+        }
+      | undefined;
+
+    // 执行事实必须齐全才写：缺任何一项都说明这不是一次干净的观测
+    if (
+      !meta ||
+      typeof meta.exitCode !== 'number' ||
+      typeof meta.passed !== 'number' ||
+      typeof meta.failed !== 'number'
+    ) {
+      return;
+    }
+
+    try {
+      const art = await this.store.put({
+        kind: 'TestReport',
+        producer: 'orchestrator',
+        content: {
+          command: meta.command ?? '',
+          exitCode: meta.exitCode,
+          passed: meta.passed,
+          failed: meta.failed,
+          failing: meta.failing ?? [],
+        } satisfies TestReportDoc,
+      });
+      await this.log?.append('testreport.published', {
+        reportId: art.id,
+        exitCode: meta.exitCode,
+        passed: meta.passed,
+        failed: meta.failed,
+        a5Verdict: a5.verdict,
+      });
+    } catch (err) {
+      // 写不进去不该让 run 崩掉：B2 会如实报 deliverable-missing，
+      // 那是一个诚实的结果，比崩溃好。
+      this.logger.warn(`TestReport 固化失败：${(err as Error).message}`);
+    }
   }
 
   private roleContext(role: RoleId): RoleContext {

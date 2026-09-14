@@ -103,6 +103,30 @@ function renderConventions(ctx: RoleContext): string {
     lines.push(`测试命令是 \`${ctx.profile.test.cmd} ${ctx.profile.test.args.join(' ')}\`，测试必须能被它真的跑起来。`);
   }
 
+  // ── 启动命令（真实 LLM 实测补上的，见 docs/07 §L8）────────────────
+  //
+  // 之前这里只说了编译与测试命令，**没说启动命令**，而 profile 里明明有 run/healthUrl。
+  // 后果实测到了：backend 角色写出的入口文件只导出了 `startServer()`，
+  // 顶层从不调用它 —— `node src/api/server.ts` 加载完模块就 exit 0，服务根本没起来。
+  // 两个独立锚点同时报错：A6「服务进程在就绪前退出（exit 0）」，
+  // 以及 A5 里所有依赖真实 HTTP 的测试连接失败。
+  //
+  // 模型的写法本身不算错（导出工厂函数便于测试），错的是**没人告诉它入口必须自启**。
+  // 这是 §L5/§L7 的同一类问题：锚点判得对，但根因是约定没传达。
+  if (ctx.profile.run) {
+    const r = ctx.profile.run;
+    lines.push(`启动命令是 \`${r.cmd} ${r.args.join(' ')}\`，服务必须在该命令下真正启动并持续监听。`);
+    lines.push(
+      '入口文件**被直接执行时必须自己启动服务**（例如在顶层调用 listen）。' +
+        '「只导出 startServer / createServer 而不在顶层调用」会让进程立刻退出 —— ' +
+        '这在实测里是最常见的失败形态：测试能过（测试自己调用工厂函数），' +
+        '但运行时锚点会报「服务进程在就绪前退出」。',
+    );
+    if (r.healthUrl) {
+      lines.push(`健康检查地址是 ${r.healthUrl}，该端点必须返回 2xx，且响应体符合契约。`);
+    }
+  }
+
   return `【项目约定（必须遵守）】\n${lines.map((l) => `- ${l}`).join('\n')}`;
 }
 

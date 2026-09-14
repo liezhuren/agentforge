@@ -71,7 +71,22 @@ export const WRITE_PERMISSIONS: Record<ArtifactKind, ActorId[]> = {
   Contract: ['pm', 'human'], // 前端/后端通过「联署意见」参与，不直接改写
   CodeModule: ['frontend', 'backend'],
   TestSuite: ['test', 'frontend', 'backend'],
-  TestReport: ['test'],
+  /**
+   * 测试报告允许 `orchestrator` 写入 —— 这是**受控例外**，理由是内容性质：
+   *
+   * TestReport 的字段是 `command / exitCode / passed / failed / failing`，
+   * 全部是**执行事实**。LLM 不可能知道真实的退出码与通过数，
+   * 让它来写只会得到一个看起来合理的编造值 —— 那正是本项目要消灭的东西。
+   *
+   * 原本只允许 `test` 写入，但没有任何代码路径真的产出过这个工件，
+   * 而 B2 锚点会拿 TaskGraph 声明的交付物去核对工件库 ⇒
+   * **只要任务图声明了 TestReport 交付物，B2 就必定失败，且重试无法修复**
+   * （真实 LLM 实测发现的系统性假失败，见 docs/07 §L8）。
+   *
+   * 现在由 orchestrator 把 A5（真的跑了测试的那个锚点）的观测结果固化成工件。
+   * `test` 权限保留：它仍可写一份补充说明，但不能声称执行数据。
+   */
+  TestReport: ['test', 'orchestrator'],
   AnchoredReview: ['host'],
   RoundtableMinute: ['orchestrator'],
   Directive: ['human'], // 只有真人能投建议书
@@ -479,6 +494,8 @@ export type RoundtableMinuteDoc = {
   invalidReason?: string;
   /** 本场会议当场执行的 falsifier 所确证/证伪的事实。 */
   facts?: RoundtableFact[];
+  /** 为产出合法决议尝试了几次（含首次）。>1 说明发生过结构化重试。 */
+  resolutionAttempts?: number;
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -637,6 +654,8 @@ export type ForgeEvent =
       facts: RoundtableFact[];
       falsifiersRun: number;
       discardedStatements: number;
+      /** 为产出合法决议尝试了几次（含首次）。>1 说明发生过结构化重试。 */
+      resolutionAttempts: number;
     }
   | { t: 'escalation.human'; bundleId: string }
   | { t: 'debt.recorded'; debtId: ArtifactId; requirementIds: string[] }

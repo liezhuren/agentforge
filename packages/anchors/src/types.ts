@@ -21,11 +21,13 @@ import type {
   AnchorRunResult,
   ArtifactKind,
   ArtifactStore,
+  CodeModule,
   EvidenceRef,
   ForgeEvent,
   ProjectProfile,
   RunId,
   RoleId,
+  TestSuiteDoc,
 } from '../../core/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
 
@@ -169,6 +171,96 @@ export const DEFAULT_ATTRIBUTION: Array<{ prefix: string; role: RoleId }> = [
   { prefix: 'shared/', role: 'pm' },
   { prefix: 'src/shared/', role: 'pm' },
 ];
+
+const normPath = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '');
+
+/**
+ * 机械归因：**优先按工件事实**，其次才按目录命名约定。
+ *
+ * ## 为什么必须有这个函数（真实 LLM 实测发现的缺陷，docs/07 §L10）
+ *
+ * 原来的归因只有 `attributeByPath` —— 一张写死的目录前缀表。
+ * 实测后果很严重：模型把服务端写在 `src/server.ts`（完全合法的布局），
+ * 而表里只有 `src/server/`（带斜杠，指目录）⇒ 一条都不匹配 ⇒ `UNRESOLVED`。
+ *
+ * 归因失败的连锁反应是致命的：
+ *   派不出工单 ⇒ **没法打回给角色返工** ⇒ 只能召集圆桌 ⇒
+ *   圆桌要开会、要产决议、要校验，成本高出几个数量级，而且经常得出 SHARED。
+ *
+ * 也就是说：**「系统为什么老是开圆桌」的真正原因，是归因器哑了。**
+ * 打回（RETRY_ROLE）才是第一优先的手段，圆桌是归因不清时的兜底。
+ *
+ * 更糟的是那张表还会**给出错误答案**：模型把前端数据层写在 `src/api/tasks.ts`，
+ * 按表 `src/api/` → backend（错的，那是 frontend 的工件）。
+ *
+ * 而归属关系本来就是**已知的确定性事实** —— 每个 `CodeModule` / `TestSuite` 工件
+ * 都记录了 `producer` 与它包含的文件列表。按事实归因与目录命名无关，
+ * 模型怎么摆文件布局都不影响。
+ *
+ * 三级策略（从强到弱）：
+ *   ① 精确路径：某个工件声明了这个文件 ⇒ 该工件的 producer
+ *   ② 声明目录：失败文件落在某个工件声明的目录下，且**只有一个**工件认领该目录
+ *   ③ 命名约定：`DEFAULT_ATTRIBUTION` 兜底（工件还没产出时的退路）
+ */
+export function attributeByArtifact(ctx: AnchorContext, path: string): RoleId | 'UNRESOLVED' {
+  const p = normPath(path);
+
+  // ── 收集「工件事实」：路径 → 角色 ──────────────────────────────
+  const declared: Array<{ path: string; role: RoleId }> = [];
+  for (const a of ctx.store.heads('CodeModule')) {
+    const files = (a.content as CodeModule | undefined)?.files ?? [];
+    for (const f of files) {
+      if (f?.path) declared.push({ path: normPath(f.path), role: a.producer as RoleId });
+    }
+  }
+  for (const a of ctx.store.heads('TestSuite')) {
+    const files = (a.content as TestSuiteDoc | undefined)?.files ?? [];
+    for (const f of files) {
+      if (f?.path) declared.push({ path: normPath(f.path), role: 'test' });
+    }
+  }
+
+  // ① 精确匹配：最强、无歧义
+  for (const d of declared) {
+    if (d.path === p) return d.role;
+  }
+
+  // ② / ③ 按**具体度**（前缀长度）比较两种来源，谁更具体谁赢。
+  //
+  // 为什么不能简单地「先目录后命名」：一个声明了 `src/server.ts` 的模块，
+  // 它的「声明目录」就是 `src/` —— 那等于让它认领整个 src/，
+  // 会把 `src/web/unknown.ts` 这类明显属于前端的文件也抢走。
+  // 反过来也不能「先命名后目录」：那样 `src/api/` 的命名规则会盖过
+  // 工件事实里「frontend 声明了 src/api/tasks.ts」这件事。
+  //
+  // 比长度是两者的正确仲裁：`src/web/`（8）比 `src/`（4）更具体 ⇒ 命名胜；
+  // `src/api/`（8）与工件声明的 `src/api/`（8）等长 ⇒ 同长度时**工件事实优先**。
+  const byDir = new Map<string, Set<RoleId>>();
+  for (const d of declared) {
+    const i = d.path.lastIndexOf('/');
+    if (i <= 0) continue; // 顶层文件没有目录，不参与目录级匹配
+    const dir = d.path.slice(0, i + 1);
+    if (!byDir.has(dir)) byDir.set(dir, new Set());
+    byDir.get(dir)!.add(d.role);
+  }
+
+  let best: { role: RoleId; len: number; fromArtifact: boolean } | null = null;
+  const consider = (role: RoleId, len: number, fromArtifact: boolean) => {
+    if (!best || len > best.len || (len === best.len && fromArtifact && !best.fromArtifact)) {
+      best = { role, len, fromArtifact };
+    }
+  };
+
+  for (const [dir, owners] of byDir) {
+    // 只在「该目录被唯一一个角色认领」时才用，避免乱归因
+    if (owners.size === 1 && p.startsWith(dir)) consider([...owners][0], dir.length, true);
+  }
+  for (const r of DEFAULT_ATTRIBUTION) {
+    if (p.startsWith(r.prefix)) consider(r.role, r.prefix.length, false);
+  }
+
+  return best ? (best as { role: RoleId }).role : 'UNRESOLVED';
+}
 
 export function worstVerdict(verdicts: Array<AnchorRunResult['verdict']>): AnchorRunResult['verdict'] {
   const rank: Record<AnchorRunResult['verdict'], number> = {

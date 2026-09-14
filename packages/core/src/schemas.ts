@@ -396,6 +396,14 @@ export const roundtableMinuteSchema: JsonSchema = {
       ...roundtableResolutionSchema,
     },
     escalation: { type: 'string', enum: ['HUMAN'] },
+    /**
+     * 为产出合法决议尝试了几次（含首次）。
+     *
+     * 记下来的理由：决议被拒后回喂错误重试是本项目「结构化重试」的又一处应用，
+     * 而「这份决意是第几次才合法的」是审计时的重要信息 ——
+     * 如果总是 3 次，说明校验器或提示词该改，而不是当成正常。
+     */
+    resolutionAttempts: { type: 'integer', minimum: 1 },
     anchorsCited: {
       type: 'array',
       items: { type: 'string', enum: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B2', 'B3'] },

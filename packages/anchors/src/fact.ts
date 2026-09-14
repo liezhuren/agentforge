@@ -19,6 +19,7 @@ import {
 } from '../../core/src/index.ts';
 import type { AnchorFinding, Artifact, CodeModule, TestSuiteDoc, ContractDoc } from '../../core/src/types.ts';
 import {
+  attributeByArtifact,
   attributeByPath,
   editDistance,
   type Anchor,
@@ -143,7 +144,7 @@ export const A1: Anchor = {
     }
     const roleOf = (pkgName: string) => {
       const f = userOf.get(pkgName);
-      return f ? attributeByPath(f) : 'UNRESOLVED';
+      return f ? attributeByArtifact(ctx, f) : 'UNRESOLVED';
     };
 
     // 注意：`findings` 在 A1.run 开头就已声明（line ~94）。
@@ -170,7 +171,7 @@ export const A1: Anchor = {
           message: `${imp.file}:${imp.line} 导入了被真人建议书明确禁止的包 "${denied}"（它甚至没有声明在 package.json 里）`,
           file: imp.file,
           line: imp.line,
-          targetRole: attributeByPath(imp.file),
+          targetRole: attributeByArtifact(ctx, imp.file),
           data: { name: denied, denied: ctx.profile.deniedDependencies, rule: 'deny' },
         });
       }
@@ -389,7 +390,7 @@ export const A2: Anchor = {
           code: 'symbol-unverifiable',
           severity: 'warn',
           message: `无法核实 "${specifier}" 的符号：${res.error}`,
-          targetRole: attributeByPath(refs[0].file),
+          targetRole: attributeByArtifact(ctx, refs[0].file),
           data: { specifier },
         });
         continue;
@@ -400,7 +401,7 @@ export const A2: Anchor = {
           code: 'entry-unresolved',
           severity: 'warn',
           message: `无法定位 "${specifier}" 的入口文件（${res.error}），其符号未经验证`,
-          targetRole: attributeByPath(refs[0].file),
+          targetRole: attributeByArtifact(ctx, refs[0].file),
           data: { specifier },
         });
         continue;
@@ -426,7 +427,7 @@ export const A2: Anchor = {
               message: `"${specifier}" 的声明中未见 default 导出（可能是 CJS 互操作，需人工确认）`,
               file: ref.file,
               line: ref.line,
-              targetRole: attributeByPath(ref.file),
+              targetRole: attributeByArtifact(ctx, ref.file),
               data: { specifier, symbol: sym },
             });
             continue;
@@ -439,7 +440,7 @@ export const A2: Anchor = {
               message: `"${specifier}" 存在无法完全解析的导出（export * / export =），因此无法断言 "${sym}" 不存在`,
               file: ref.file,
               line: ref.line,
-              targetRole: attributeByPath(ref.file),
+              targetRole: attributeByArtifact(ctx, ref.file),
               data: { specifier, symbol: sym },
             });
             continue;
@@ -451,7 +452,7 @@ export const A2: Anchor = {
             message: `${ref.file}:${ref.line} 从 "${specifier}" 导入了不存在的符号 "${sym}"（该包真实存在，但未导出此名字）—— 这是幻觉 API`,
             file: ref.file,
             line: ref.line,
-            targetRole: attributeByPath(ref.file),
+            targetRole: attributeByArtifact(ctx, ref.file),
             data: { specifier, symbol: sym, available: [...exports.names].slice(0, 40) },
           });
         }
@@ -533,7 +534,7 @@ export const A3: Anchor = {
           message: `${imp.file}:${imp.line} 导入的 "${imp.specifier}" 在磁盘上找不到对应文件（已按 ${baseDir || '.'}/ 解析）—— 这是编造的模块路径`,
           file: imp.file,
           line: imp.line,
-          targetRole: attributeByPath(imp.file),
+          targetRole: attributeByArtifact(ctx, imp.file),
           data: { specifier: imp.specifier, resolvedFrom: baseDir || '.' },
         });
       }
@@ -628,7 +629,7 @@ export const A4: Anchor = {
         file: file.replace(/\\/g, '/'),
         line: Number(ln),
         col: Number(col),
-        targetRole: attributeByPath(file),
+        targetRole: attributeByArtifact(ctx, file),
         data: { tsCode: code },
       });
     }
@@ -742,7 +743,30 @@ export const A5: Anchor = {
     }
 
     const findings: AnchorFinding[] = [];
-    const failingNames = [...combined.matchAll(/^\s*✖\s+(.*)$/gm)].map((m) => m[1].trim()).slice(0, 30);
+    // 失败用例的**名称 + 报错首行**。
+    //
+    // 名称来自 node:test 的 `✖ name` 行，报错取其后的第一条实质输出行（跳过堆栈帧）。
+    // 这份明细有两个用处：写进 A5 的 finding 让人直接看到失败原因，
+    // 以及**固化进 TestReport 工件**（见 orchestrator.publishTestReport）——
+    // TestReport schema 要求 failing 带 message，只有真的解析出来才填得进去。
+    const failingDetails: Array<{ name: string; message: string }> = [];
+    {
+      const lines = combined.split('\n');
+      for (let i = 0; i < lines.length && failingDetails.length < 30; i++) {
+        const m = /^\s*✖\s+(.*)$/.exec(lines[i]);
+        if (!m) continue;
+        let message = '';
+        for (let k = i + 1; k < Math.min(i + 6, lines.length); k++) {
+          const t = lines[k].trim();
+          if (t.length === 0) continue;
+          if (/^(at\s|✖|✔|ℹ|\.\.\.)/.test(t)) continue; // 堆栈帧 / 下一条结果行
+          message = t.slice(0, 300);
+          break;
+        }
+        failingDetails.push({ name: m[1].trim(), message });
+      }
+    }
+    const failingNames = failingDetails.map((f) => f.name);
 
     if (failed > 0 || r.exitCode !== 0) {
       findings.push({
@@ -803,6 +827,8 @@ export const A5: Anchor = {
         command: `${cmd.cmd} ${cmd.args.join(' ')}`,
         passed,
         failed,
+        // 供 orchestrator 固化成 TestReport 工件（执行事实必须来自真实运行）
+        failing: failingDetails,
         stdoutTail: r.stdout.slice(-1500),
         treeHash: await sourceTreeHash(ctx),
       },
@@ -845,7 +871,7 @@ export const A6: Anchor = {
         code: 'runtime-probe-failed',
         severity: 'fail',
         message: probe.message,
-        targetRole: attributeByPath(probe.stderrHint ?? 'src/api/'),
+        targetRole: attributeByArtifact(ctx, probe.stderrHint ?? 'src/api/'),
         data: { healthUrl: run.healthUrl, stdout: truncate(probe.stdout), stderr: truncate(probe.stderr) },
       });
     }

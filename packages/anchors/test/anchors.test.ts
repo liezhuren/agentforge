@@ -9,6 +9,8 @@ import {
   A6,
   ALL_ANCHORS,
   ANCHOR_INDEX,
+  attributeByArtifact,
+  attributeByPath,
   attributionOf,
   createAnchorContext,
   runAnchors,
@@ -1021,6 +1023,65 @@ test('A6：Windows 上必须把 npm 解析成 npm.cmd（否则运行时探针永
   } else {
     assert.equal(resolved.path, 'npm', '非 Windows 平台保持原样');
     assert.equal(resolved.needsShell, false);
+  }
+});
+
+test('归因【关键】：必须按工件事实归因，而不是目录命名约定（否则打回不了）', async () => {
+  // 真实 LLM 实测发现的缺陷（docs/07 §L10）。这一条回答的是
+  // 「系统为什么老是开圆桌、而不是直接打回让角色返工」：
+  //
+  // 打回需要**责任人**。而原来的归因只有一张写死的目录前缀表
+  // （`src/api/` → backend、`src/server/` → backend …）。
+  // 模型把服务端写在 `src/server.ts` —— 表里是 `src/server/`（带斜杠，指目录），
+  // 于是**一条都不匹配**、归因变成 UNRESOLVED ⇒ 派不出工单 ⇒ 没法打回 ⇒ 只能开圆桌。
+  //
+  // 更糟的是那张表还会给出**错误答案**：模型把前端数据层放在 `src/api/tasks.ts`，
+  // 按表 `src/api/` → backend，而那其实是 frontend 的工件。
+  //
+  // 而归属关系本来就是确定性事实：CodeModule 工件记录了 producer 与它包含的文件。
+  const f = await makeFixture();
+  try {
+    const ctx = ctxFor(f);
+
+    // 场景 A：旧表**认不出**的布局（顶层 src/server.ts，不属于任何已知目录前缀）
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      content: { files: [{ path: 'src/server.ts', content: '' }, { path: 'src/index.ts', content: '' }] },
+    } as never);
+    assert.equal(
+      attributeByArtifact(ctx, 'src/server.ts'),
+      'backend',
+      'src/server.ts 是 backend 的工件 ⇒ 必须归给 backend（旧表会给出 UNRESOLVED）',
+    );
+    assert.equal(attributeByPath('src/server.ts'), 'UNRESOLVED', '（对照：仅按命名约定确实认不出来）');
+
+    // 场景 B：旧表**归错人**的布局（frontend 的工件落在 src/api/ 下）
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'frontend',
+      content: { files: [{ path: 'src/api/tasks.ts', content: '' }] },
+    } as never);
+    assert.equal(
+      attributeByArtifact(ctx, 'src/api/tasks.ts'),
+      'frontend',
+      '该文件属于 frontend 的工件 ⇒ 必须归给 frontend（旧表会错归 backend）',
+    );
+    assert.equal(attributeByPath('src/api/tasks.ts'), 'backend', '（对照：仅按命名约定会归错人）');
+
+    // 场景 C：测试文件按工件归给 test
+    await f.store.put({
+      kind: 'TestSuite',
+      producer: 'test',
+      content: { framework: 'node:test', files: [{ path: 'tests/api.test.ts', content: '' }], covers: [] },
+    } as never);
+    assert.equal(attributeByArtifact(ctx, 'tests/api.test.ts'), 'test');
+
+    // 场景 D：完全没有任何工件声明过的文件 → 回落到命名约定（不能凭空归因）
+    assert.equal(attributeByArtifact(ctx, 'src/web/unknown.ts'), 'frontend', '未声明时回落到目录约定');
+    assert.equal(attributeByArtifact(ctx, 'totally/unknown.ts'), 'UNRESOLVED', '无从判断就必须如实说不知道');
+  } finally {
+    await f.cleanup();
   }
 });
 

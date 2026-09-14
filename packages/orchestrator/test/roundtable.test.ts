@@ -15,6 +15,7 @@ import {
 } from '../../core/src/index.ts';
 import { createAnchorContext, type AnchorContext } from '../../anchors/src/index.ts';
 import {
+  MAX_RESOLUTION_ATTEMPTS,
   RoundtableSession,
   isMechanicallyCheckable,
   validateResolution,
@@ -441,6 +442,79 @@ test('圆桌：引用不存在的文件的发言被丢弃（证据核验是确�
     );
     const result = await session.run(map, async () => resolution());
     assert.equal(result.minute.statements.filter((s) => !s.discarded).length, 0, '所有发言都应因幻觉证据被丢弃');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('圆桌决议：校验不过时回喂错误重试，而不是直接判死（结构化重试）', async () => {
+  // 真实 LLM 实测补上的（docs/07 §L9）。
+  // 原本是「一次机会」：一份 10 条验收条件的决议，只要 1 条没被
+  // isMechanicallyCheckable 认出，整份决议就作废、项目直接带债 ——
+  // 校验器的误杀被放大成了项目的失败。
+  const f = await fixture();
+  try {
+    const session = f.session();
+    const hints: Array<string | undefined> = [];
+    let call = 0;
+
+    const result = await session.run(speakers(null, CONFIRMING), async (_s, _a, _facts, retryHint) => {
+      call++;
+      hints.push(retryHint);
+      // 第 1 次给一份验收条件不可核验的决议（模拟真实模型的措辞）
+      if (call === 1) {
+        return resolution({
+          actions: [{ owner: 'backend', action: '改进实现质量', acceptance: ['提升可维护性'] }],
+        });
+      }
+      // 第 2 次修正
+      return resolution({
+        actions: [{ owner: 'backend', action: '修正 /api/tasks 的响应结构', acceptance: ['A4 锚点 PASS'] }],
+      });
+    });
+
+    assert.equal(call, 2, '校验失败后应当重试一次，而不是直接判死');
+    assert.equal(hints[0], undefined, '首次调用不该带重试提示');
+    assert.ok(hints[1]?.includes('无法被机械验证'), `重试必须回喂**具体**错误，实际：${hints[1]}`);
+    assert.equal(result.resolutionValid, true, result.invalidReason);
+    assert.equal(result.resolutionAttempts, 2);
+    assert.equal(result.minute.resolutionAttempts, 2, '尝试次数必须留下取证');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('圆桌决议：重试有上限，改不好仍然升级真人（重试不放宽机械规则）', async () => {
+  const f = await fixture();
+  try {
+    const session = f.session();
+    let call = 0;
+    const result = await session.run(speakers(null, CONFIRMING), async () => {
+      call++;
+      return resolution({ actions: [{ owner: 'backend', action: '改进实现质量', acceptance: ['提升可维护性'] }] });
+    });
+
+    assert.equal(call, MAX_RESOLUTION_ATTEMPTS, `应当恰好尝试 ${MAX_RESOLUTION_ATTEMPTS} 次后放弃`);
+    assert.equal(result.resolutionValid, false, '重试不能把不合法的决议变成合法');
+    assert.equal(result.minute.escalation, 'HUMAN', '改不好仍然升级真人');
+    assert.ok(result.invalidReason?.includes('无法被机械验证'), result.invalidReason);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('圆桌决议：首次就合法时不产生任何多余调用', async () => {
+  const f = await fixture();
+  try {
+    const session = f.session();
+    let call = 0;
+    const result = await session.run(speakers(null, CONFIRMING), async () => {
+      call++;
+      return resolution();
+    });
+    assert.equal(call, 1, '一切正常时不该多花一次 LLM 调用');
+    assert.equal(result.resolutionAttempts, 1);
+    assert.equal(result.resolutionValid, true);
   } finally {
     await f.cleanup();
   }

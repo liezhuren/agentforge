@@ -354,7 +354,10 @@ export function isMechanicallyCheckable(acceptance: string): boolean {
     /(测试|用例|test|spec)[^。；]{0,20}(通过|失败|成功|存在|覆盖|断言)/i,
     /(返回|响应|状态码|status)[^。；]{0,20}\d{3}/i,
     // 具体的判定动词
-    /(不存在|等于|不等于|包含|不包含|不再|必须为|个数|数量|为空|非空|大于|小于)/,
+    /(不存在|等于|不等于|不为|不再|包含|不包含|必须为|个数|数量|计数|为空|非空|大于|小于)/,
+    // 显式的数值比较（「归因计数 = 0」「失败项数 < 1」）——
+    // 这类断言是最可机械核验的一种，不能因为词表里没有「计数」而误杀。
+    /[=＝<>≤≥≠]\s*-?\d/,
     // 明确的次数 / 数量断言（真实 LLM 常这么写：「连续执行 3 次结果一致」）
     // 中文数字也要认 —— 模型写「连续两次」和写「连续 2 次」一样常见。
     /\d+\s*(次|个|条|项|种|遍)/,
@@ -422,10 +425,21 @@ export type RoundtableResult = {
   facts: RoundtableFact[];
   /** 当场执行过的 falsifier 次数。 */
   falsifiersRun: number;
+  /** 为产出合法决议尝试了几次（含首次）。>1 说明发生过结构化重试。 */
+  resolutionAttempts: number;
   anchorsCited: AnchorId[];
 };
 
 export const MAX_ROUNDS = 2;
+
+/**
+ * 决议最多尝试几次（含首次）。
+ *
+ * 与 `MAX_ROUNDS` 是两件不同的事：轮数限制的是**辩论**（防止「谁更能说谁赢」），
+ * 这里限制的是**产出合法决议的尝试次数**（防止格式问题被无限重试掩盖）。
+ * 3 次足够修掉「某条验收条件措辞不可核验」这类问题，又不至于把成本放大太多。
+ */
+export const MAX_RESOLUTION_ATTEMPTS = 3;
 
 export type RoundtableSessionOptions = {
   trigger: RoundtableTrigger;
@@ -482,6 +496,11 @@ export class RoundtableSession {
       statements: RoundtableStatement[],
       agenda: string[],
       facts: RoundtableFact[],
+      /**
+       * 上一次决议未通过机械校验的原因。仅在重试时传入 ——
+       * 与项目别处的「结构化重试」一致：把**具体错误**回喂，而不是盲目重试。
+       */
+      retryHint?: string,
     ) => Promise<RoundtableResolution | null>,
   ): Promise<RoundtableResult> {
     // ── 第 1 轮：立场陈述 ──────────────────────────────────────
@@ -507,13 +526,39 @@ export class RoundtableSession {
     // 注意分工：机械主持负责**流程**（议程、证据核验、falsifier 执行、轮数上限）与
     // **决议合法性校验**（validateResolution）；决议的**内容**由 LLM 提议。
     // 这正是全局不变量「LLM 提议、程序裁决」在圆桌场景的体现。
-    const resolution = await synthesize(this.liveStatements(), this.agenda, this.facts);
-    const check = validateResolution(resolution, { facts: this.facts });
+    //
+    // ── 为什么决议要**重试**（真实 LLM 实测补上的，docs/07 §L9）────────
+    //
+    // 最初这里是「一次机会」：校验不过 → 决议作废 → 升级真人/带债。
+    // 实测后果很糟：一份 10 条验收条件的决议，只要**1 条**没被
+    // `isMechanicallyCheckable` 的正则认出来，整份决议就被丢掉、项目直接带债。
+    // 而那条验收条件本身往往是可核验的（例如「取值不为 SHARED」「计数 = 0」），
+    // 只是校验器的词表没想到 —— 于是**校验器的误杀被放大成了项目的失败**。
+    //
+    // 正确处理方式与项目别处的「结构化重试」完全一致：
+    // 把**具体的校验错误**回喂给模型，让它改，而不是直接判死。
+    // 重试次数有上限（MAX_RESOLUTION_ATTEMPTS），失败后仍然照旧升级真人 ——
+    // 重试只是给「可修复的格式问题」一次机会，不放宽任何机械规则。
+    const liveStatements = this.liveStatements();
+    let resolution = await synthesize(liveStatements, this.agenda, this.facts);
+    let check = validateResolution(resolution, { facts: this.facts });
+    let resolutionAttempts = 1;
+
+    while (!check.ok && resolutionAttempts < MAX_RESOLUTION_ATTEMPTS) {
+      resolutionAttempts++;
+      this.logger.info(
+        `圆桌决议未通过机械校验，回喂错误后重试（第 ${resolutionAttempts}/${MAX_RESOLUTION_ATTEMPTS} 次）：${check.reason.slice(0, 120)}`,
+      );
+      resolution = await synthesize(liveStatements, this.agenda, this.facts, check.reason);
+      check = validateResolution(resolution, { facts: this.facts });
+    }
+
     const discarded = this.statements.filter((s) => s.discarded).length;
 
     this.logger.info(
       `圆桌结束：trigger=${this.trigger} 发言=${this.statements.length} 丢弃=${discarded} ` +
-        `falsifier=${this.falsifiersRun}（确证 ${this.facts.filter((f) => f.outcome === 'sustained').length}）`,
+        `falsifier=${this.falsifiersRun}（确证 ${this.facts.filter((f) => f.outcome === 'sustained').length}）` +
+        ` 决议尝试=${resolutionAttempts}`,
       { resolutionValid: check.ok, ...(check.ok ? {} : { invalidReason: check.reason }) },
     );
 
@@ -527,12 +572,14 @@ export class RoundtableSession {
         ...(check.ok ? {} : { escalation: 'HUMAN' as const, invalidReason: check.reason }),
         anchorsCited: [],
         facts: this.facts,
+        resolutionAttempts,
       },
       resolutionValid: check.ok,
       ...(check.ok ? {} : { invalidReason: check.reason }),
       discardedStatements: discarded,
       facts: this.facts,
       falsifiersRun: this.falsifiersRun,
+      resolutionAttempts,
       anchorsCited: [],
     };
   }

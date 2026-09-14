@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -302,6 +302,91 @@ test('端到端：全部合规的项目一次通过到 DELIVERED', async () => {
 // ════════════════════════════════════════════════════════════════
 // 验收用例 2：幻觉包 → A 层硬失败 → **不叫主理人**，直接派工单
 // ════════════════════════════════════════════════════════════════
+
+test('【关键】能归因就打回：一条归不了因，不得把整个阶段拖进圆桌', async () => {
+  // 真实 LLM 实测改正（docs/07 §L10）。原来的判定是
+  //   `t4 = roles.length >= 2 || hasUnresolved`
+  // 即**只要有一条归不了因**，整个阶段就判定「需要开会」。
+  // 后果：同一轮里 A2 已经明确归到 backend、本可以直接打回返工，
+  // 却因为另一个文件归不了因而陪着进圆桌 —— 而圆桌的成本高出一到两个数量级。
+  //
+  // 正确优先级：能归因就打回，**一条都归不了因才开会**。先做能做的事。
+  const hallucinated = API_CODE.replace(
+    "import { padLeft } from 'leftpad-real';",
+    "import { padLeft, padRigth } from 'leftpad-real';",
+  );
+
+  const { root, orch, cleanup } = await setup(
+    happyScript({
+      'produce:CodeModule:api': { files: [{ path: 'src/api/routes.ts', content: hallucinated }] },
+      'repair:CodeModule:api': { files: [{ path: 'src/api/routes.ts', content: API_CODE }] },
+      // 打回之后 backend 修好了幻觉符号，但那个游离文件的坏导入仍在、
+      // 且它不属于任何工件 ⇒ 归因依然缺失 ⇒ 这一轮才真的需要圆桌。
+      // （这正是设计的意图：**先做完能做的事，剩下的才开会。**）
+      'roundtable:pm': {
+        claim: '无法判断 src/loose.ts 属于谁的产出，需要补上归属信息',
+        evidence: [{ kind: 'file', path: 'src/api/routes.ts', startLine: 1, endLine: 2 }],
+      },
+      'roundtable:frontend': {
+        claim: '文件不在我的工件清单里',
+        evidence: [{ kind: 'file', path: 'src/web/client.ts', startLine: 1, endLine: 2 }],
+      },
+      'roundtable:backend': {
+        claim: '文件不在我的工件清单里',
+        evidence: [{ kind: 'file', path: 'src/api/routes.ts', startLine: 6, endLine: 8 }],
+      },
+      'roundtable:test': {
+        claim: '该文件未被任何工件声明',
+        evidence: [{ kind: 'file', path: 'src/api/routes.ts', startLine: 1, endLine: 2 }],
+      },
+      'roundtable:resolution': {
+        attribution: 'SHARED',
+        decision: 'src/loose.ts 未被任何 CodeModule 工件声明，先由后端把它纳入工件归属再判定',
+        actions: [
+          { owner: 'backend', action: '把 src/loose.ts 纳入 CodeModule 工件声明', acceptance: ['A3 锚点 PASS'] },
+        ],
+      },
+    }),
+  );
+  try {
+    // 额外丢一个「不属于任何 CodeModule 工件」的文件到磁盘上，制造一条归不了因的失败：
+    // src/loose.ts 的导入指向不存在的模块 ⇒ A3 硬失败，且无法判断该归给谁。
+    await write(root, 'src/loose.ts', "import { nothing } from './does-not-exist';\nexport const x = nothing;\n");
+
+    const summary = await orch.run();
+
+    // A2（幻觉符号，能归因到 backend）与 A3（游离文件，归不了因）同时硬失败。
+    const building = summary.traces.find((t) => t.stage === 'BUILDING')!;
+    const actions = building.nextActions;
+
+    // ① **首次动作必须是打回**，而不是开会：
+    //    有可归责的对象时先让它返工 —— 打回比开圆桌便宜一到两个数量级。
+    assert.ok(
+      actions[0]?.includes('RETRY_ROLE') && actions[0]?.includes('backend'),
+      `首个动作应当是把能归因的失败打回给 backend，实际：${JSON.stringify(actions)}`,
+    );
+
+    // ② 开会次数必须有界。
+    //    修复前这里会连开 7 次 T4 直到撞上阶段循环上限（真实 LLM 上更贵）——
+    //    根因是「硬失败签名」只在 RETRY_ROLE 分支更新，圆桌分支从不更新，
+    //    于是圆桌之后的下一轮拿当前签名去比一个过期值，「签名未变」永远不成立、
+    //    「不为没变化的失败反复开会」那道闸门形同虚设。
+    const roundtableCount = actions.filter((a) => a.includes('ROUNDTABLE')).length;
+    assert.ok(
+      roundtableCount <= 1,
+      `归不了因的失败至多开一次圆桌；实际开了 ${roundtableCount} 次：${JSON.stringify(actions)}`,
+    );
+
+    // ③ 且最终必须收敛到逃生流程，而不是无限循环
+    assert.ok(
+      building.blockedReasons.includes('repair-ineffective') || building.blockedReasons.includes('stage-cycle-limit'),
+      `反复无效之后应当转逃生流程，实际阻断原因：${JSON.stringify(building.blockedReasons)}`,
+    );
+    assert.notEqual(summary.delivery, 'complete', '这个场景本来就修不好（游离文件无人认领），应当带债或升级真人');
+  } finally {
+    await cleanup();
+  }
+});
 
 test('端到端：注入幻觉符号 → A 层硬失败时不唤醒主理人，直接机械派工单', async () => {
   const hallucinated = API_CODE.replace(
@@ -803,6 +888,80 @@ test('【关键】角色提示词必须包含项目约定（否则 A4 的失败�
     );
     // 约定必须来自 profile，而不是写死的通用建议
     assert.ok(prompts.includes(process.execPath) || prompts.includes('npm run'), '应当把真实的编译/测试命令告诉角色');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('【关键】有 run 命令时，提示词必须说明「入口必须自启」（否则 A5+A6 一起失败）', async () => {
+  // 真实 LLM 实测发现（docs/07 §L8）：生成的入口文件只导出了 `startServer()`、
+  // 顶层从不调用它，于是 `node src/api/server.ts` 加载完就 exit 0。
+  // 两个独立锚点同时报错：A6「服务进程在就绪前退出（exit 0）」，
+  // A5 里所有依赖真实 HTTP 的测试连接失败。
+  //
+  // 模型的写法不算错（导出工厂函数便于测试），错的是 profile 里明明有 run/healthUrl
+  // 而 renderConventions 只告诉了它编译与测试命令 —— 又一次「约定没传达」。
+  const { provider, orch, cleanup } = await setup(happyScript(), {
+    profileOverride: {
+      run: { cmd: 'npm', args: ['start'], healthUrl: 'http://127.0.0.1:8787/health' },
+    },
+  });
+  try {
+    await orch.run();
+    const prompts = provider.calls.map((c) => c.lastUserMessage).join('\n');
+    assert.ok(prompts.includes('npm start'), '必须告诉角色真实的启动命令');
+    assert.ok(prompts.includes('http://127.0.0.1:8787/health'), '必须告诉角色健康检查地址');
+    assert.ok(
+      prompts.includes('被直接执行时必须自己启动服务'),
+      '必须点名「只导出不调用会让进程立刻退出」这个失败形态 —— 光给命令不足以避免它',
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// 验收用例 14b：TestReport 必须由真实执行固化
+// ════════════════════════════════════════════════════════════════
+
+test('【关键】TestReport 必须由真实执行固化，不能由 LLM 撰写', async () => {
+  // 真实 LLM 实测发现的系统性假失败（docs/07 §L8）：
+  // PM 的任务图自然会声明「测试任务交付 TestReport」，B2 锚点会拿声明的交付物
+  // 去核对工件库。而此前**没有任何代码路径产出过 TestReport**，
+  // 于是 B2 必定报 deliverable-missing，派出的工单又无法通过重试修复
+  // —— 项目必然带债，而且失败被错误地归因到 test 角色头上。
+  const { root, orch, cleanup } = await setup(happyScript());
+  try {
+    await orch.run();
+
+    const dir = join(root, 'artifacts', 'TestReport');
+    const reports = (await readdir(dir).catch(() => [])) as string[];
+    assert.ok(reports.length > 0, '测试真的跑过之后，必须有一份 TestReport 工件');
+
+    const doc = JSON.parse(await readFile(join(dir, reports[0]), 'utf8')) as {
+      producer: string;
+      content: { command: string; exitCode: number; passed: number; failed: number };
+    };
+
+    assert.equal(doc.producer, 'orchestrator', '执行事实只能由编排器固化，不能挂在角色名下');
+    assert.equal(doc.content.exitCode, 0);
+    assert.equal(doc.content.passed, 4, '数字必须来自真实解析，不是模型编的');
+    assert.equal(doc.content.failed, 0);
+    assert.ok(doc.content.command.length > 0, '必须记录真正执行过的命令，否则这份报告不可复核');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('TestReport 不得在「没测过」时伪造：A5 没得跑就不写报告', async () => {
+  // 与 SKIPPED ≠ PASS 同一条原则：没测过不能被写成一份看起来测过的报告。
+  const { root, orch, cleanup } = await setup(happyScript(), {
+    profileOverride: { test: null }, // 没有测试命令 → A5 报 SKIPPED
+  });
+  try {
+    await orch.run();
+    const reports = await readdir(join(root, 'artifacts', 'TestReport')).catch(() => []);
+    assert.deepEqual(reports, [], '没有执行事实时，宁可不产出工件，也不写空报告');
   } finally {
     await cleanup();
   }

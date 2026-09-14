@@ -165,8 +165,38 @@ export class Gate {
       const roles = Object.keys(attribution).filter((r) => r !== 'UNRESOLVED');
       const hasUnresolved = (attribution['UNRESOLVED'] ?? 0) > 0;
 
-      // T4：执行类锚点失败且归因分散到多个角色（互相甩锅），或根本归不了因
-      const t4 = roles.length >= 2 || hasUnresolved;
+      // ── 优先打回，圆桌只是兜底（真实 LLM 实测改正，docs/07 §L10）────
+      //
+      // 原来的判定是 `roles.length >= 2 || hasUnresolved`，即**只要有一条归不了因**
+      // 就把整个阶段判定为「需要开会」。实测这是在自找麻烦：
+      // 同一轮里 A6 明明已经明确归到 backend、本可以直接打回返工，
+      // 却因为 A3/A4 归因缺失而陪着一起进圆桌 ——
+      // 圆桌要开会、要产决议、要校验，成本比打回高一到两个数量级。
+      //
+      // 正确的优先级是：**能归因就打回，一条都归不了因才开会。**
+      //   - roles.length >= 2 → 真的是「互相甩锅」（多个角色都被指到），需要协商
+      //   - roles.length === 1 → 有明确责任方 ⇒ **打回**
+      //   - roles.length === 0 → 没有任何可打回的对象 ⇒ 这才需要圆桌
+      //
+      // 注意最后一种情况里「部分归因缺失」不构成开会的理由：
+      // 打回已经归到的那部分，下一轮 Gate 会重新评估 ——
+      // 那时若只剩归不了的，再开会也不迟。**先做能做的事。**
+      const wantsRoundtable = roles.length >= 2 || roles.length === 0;
+
+      // ── 不再为「没变化的失败」反复开会 ──────────────────────────
+      //
+      // 实测出现过一个阶段连开 6 次 T4 圆桌：圆桌产出有效决议 → 派工单 →
+      // 角色返工 → 硬失败签名**完全没变** → 又满足 T4 → 再开会 …… 循环烧钱。
+      // （TriggerContext.roundtablesHeld 这个字段本来就是为「避免无限开会」而加的，
+      //  但它此前从未被读过 —— 防护是空的。）
+      //
+      // 规则：**已经开过圆桌、且本轮硬失败签名与上一轮完全相同** ⇒ 不再开会。
+      // 此时改为打回主责角色，编排层会识别「修复无效」并转逃生流程（1 轮收敛）。
+      const roundtableAlreadyHeld = (input.roundtablesHeld ?? 0) > 0;
+      const signatureUnchanged =
+        signature !== null && signature === (input.previousHardFailureSignature ?? null);
+      const t4 = wantsRoundtable && !(roundtableAlreadyHeld && signatureUnchanged);
+
       const primaries = roles.length > 0 ? (roles as RoleId[]) : [];
       const target = this.pickPrimaryRole(primaries);
 
