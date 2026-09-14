@@ -192,10 +192,15 @@ async function main(): Promise<void> {
     allAnchors.get('A6')?.verdict === 'PASS' && (allAnchors.get('A6')?.meta as { httpStatus?: number })?.httpStatus === 200,
     `httpStatus=${(allAnchors.get('A6')?.meta as { httpStatus?: number })?.httpStatus}`,
   );
+  // 先把 meta 取出来再断言：`(x as {passed?: number})?.passed > 0` 里
+  // `passed` 可能是 undefined，直接比较会过不了类型检查（TS2532）。
+  // 这类地方必须显式给默认值，而不是靠 `!` 压过去 —— 压过去就等于放弃了这道检查。
+  const a5meta =
+    (allAnchors.get('A5')?.meta as { passed?: number; failed?: number } | undefined) ?? {};
   check(
     'A5 测试锚点真的跑了测试并解析出通过数',
-    (allAnchors.get('A5')?.meta as { passed?: number })?.passed > 0,
-    `passed=${(allAnchors.get('A5')?.meta as { passed?: number })?.passed} failed=${(allAnchors.get('A5')?.meta as { failed?: number })?.failed}`,
+    (a5meta.passed ?? 0) > 0,
+    `passed=${a5meta.passed} failed=${a5meta.failed}`,
   );
 
   // 2.1 独立编译

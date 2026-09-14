@@ -61,10 +61,14 @@ export function schemaToTs(schema: unknown, indent = 0): string {
       const required = new Set((s.required as string[] | undefined) ?? []);
       const keys = Object.keys(props);
       if (keys.length === 0) {
-        if (s.additionalProperties === true || s.additionalProperties === undefined) {
-          return keys.length === 0 && s.additionalProperties !== false ? 'Record<string, unknown>' : '{}';
-        }
-        return '{}';
+        // 没有 properties 的对象 schema：`additionalProperties !== false` 时是「任意键」。
+        //
+        // 这里原来写成 `keys.length === 0 && s.additionalProperties !== false ? ... : ...`，
+        // 而外层已经判断过 `keys.length === 0`，参数里也只可能是 true 或 undefined ——
+        // 三元的两个条件**恒为真**，那个 `: '{}'` 分支永远走不到。
+        // 结果本身是对的，但那段代码看起来像在「处理边界」，实际是死代码：
+        // 下次有人想改这里的语义时，会以为自己有两条分支可调。
+        return s.additionalProperties === false ? '{}' : 'Record<string, unknown>';
       }
       const pad = '  '.repeat(indent + 1);
       const body = keys

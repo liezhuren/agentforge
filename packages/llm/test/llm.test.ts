@@ -1042,11 +1042,19 @@ test('配置：apiKey 支持 ${ENV_VAR}，缺失时明确报错而不是静默�
   try {
     assert.equal(expandEnv('${AF_TEST_KEY}', problems, 'k'), 'secret-123');
     assert.equal(expandEnv('Bearer ${AF_TEST_KEY}', problems, 'k'), 'Bearer secret-123');
-    assert.deepEqual(problems, []);
+    // ⚠️ 这里刻意**不用** `assert.deepEqual(problems, [])`。
+    //
+    // `assert.deepEqual` 在 @types/node 里是一个**断言函数**：它会把第一个参数
+    // 的类型收窄成第二个参数的类型，于是 `problems` 被收窄成空元组 `[]`，
+    // 之后 `problems[0]` 的类型就变成 `never`（TS2339）、`problems.length === 1` 也不可能成立。
+    //
+    // 表达式全对，被收窄的是**变量** —— 断言库与类型检查互相作用的陷阱。
+    // 这个文件此前没有任何类型检查，所以从来没人发现。
+    assert.equal(problems.length, 0, `不该有问题，实际：${JSON.stringify(problems)}`);
 
     expandEnv('${AF_TEST_DOES_NOT_EXIST}', problems, 'providers.a.apiKey');
-    assert.equal(problems.length, 1);
-    assert.ok(problems[0].includes('AF_TEST_DOES_NOT_EXIST'));
+    assert.equal(problems.length, 1, `应报出一个未定义变量问题，实际：${JSON.stringify(problems)}`);
+    assert.ok(problems[0]!.includes('AF_TEST_DOES_NOT_EXIST'), problems[0]);
   } finally {
     delete process.env.AF_TEST_KEY;
   }

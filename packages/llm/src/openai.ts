@@ -86,8 +86,17 @@ export class OpenAiCompatProvider implements LlmProvider {
     this.resolvedStrictSchema = config.strictSchema === 'sanitize' ? 'sanitize' : 'as-is';
   }
 
-  /** 探测结果由 probe 写回，避免重复试错。 */
-  setJsonMode(mode: JsonSchemaMode): void {
+  /**
+   * 探测结果由 probe 写回，避免重复试错。
+   *
+   * 参数类型必须包含 `'auto'`：内部状态的初值就是 `'auto'`（见构造函数），
+   * 含义是「还没探测过 ⇒ 先按 strict 试」（见 capabilities() 的处理）。
+   * 原来的签名只有 `JsonSchemaMode`，于是**探测失败后的回滚**传 `'auto'` 类型不通过。
+   * 而回滚的正确语义正是「恢复到探测之前那个确切状态」—— 那个状态可能就是 `'auto'`。
+   * 收窄参数类型会让回滚悄悄变成「恢复到 strict」，也就是 §6.7 那个缓存写回缺陷的同一类问题：
+   * provider 停在比端点实际能力更严的模式上，之后每次结构化调用都 400。
+   */
+  setJsonMode(mode: JsonSchemaMode | 'auto'): void {
     this.resolvedJsonMode = mode;
   }
 

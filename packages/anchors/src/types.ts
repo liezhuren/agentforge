@@ -20,7 +20,6 @@ import type {
   AnchorLayer,
   AnchorRunResult,
   ArtifactKind,
-  ArtifactStore,
   CodeModule,
   EvidenceRef,
   ForgeEvent,
@@ -29,6 +28,10 @@ import type {
   RoleId,
   TestSuiteDoc,
 } from '../../core/src/types.ts';
+// `ArtifactStore` 是类，不是类型 —— 它在 store.ts 里。
+// 注意这类错误**运行时永远不会暴露**：`import type` 会被类型剥离整行擦除，
+// 所以指向一个不存在的成员不会报错，只是悄悄变成 any（或像这里一样一直报错没人看）。
+import type { ArtifactStore } from '../../core/src/store.ts';
 import type { Logger } from '../../core/src/logger.ts';
 import type { ContractState } from '../../core/src/projectcontract.ts';
 

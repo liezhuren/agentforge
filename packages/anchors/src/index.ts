@@ -3,7 +3,9 @@
  */
 
 import { join } from 'node:path';
-import type { AnchorId, AnchorRunResult, ArtifactStore, ProjectProfile } from '../../core/src/types.ts';
+import type { AnchorId, AnchorRunResult, ForgeEvent, ProjectProfile } from '../../core/src/types.ts';
+// ArtifactStore 是 store.ts 里的类，不在 types.ts 里（见 types.ts 同处的说明）
+import type { ArtifactStore } from '../../core/src/store.ts';
 import { readTextOrNull, walkFiles } from '../../core/src/fsutil.ts';
 import type { Logger } from '../../core/src/logger.ts';
 import { silentLogger } from '../../core/src/logger.ts';

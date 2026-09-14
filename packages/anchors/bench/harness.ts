@@ -281,8 +281,12 @@ function classify(
   }
 
   if (sample.expect.kind === 'not-pass') {
-    const actual = results.find((r) => r.anchorId === sample.expect.anchorId);
-    if (!actual) return { outcome: 'FN', detail: `样本未运行期望的锚点 ${sample.expect.anchorId}` };
+    // 必须先取到局部变量：类型收窄**不会传播进回调**（编译器无法证明
+    // 在 find 执行期间 sample.expect 没被改过），所以直接在闭包里访问
+    // `sample.expect.anchorId` 是过不了类型检查的 —— 而运行时完全正常。
+    const wantId = sample.expect.anchorId;
+    const actual = results.find((r) => r.anchorId === wantId);
+    if (!actual) return { outcome: 'FN', detail: `样本未运行期望的锚点 ${wantId}` };
     // 不变量：不得声称通过，且必须留下说明（否则用户看到的是一个没有理由的绿灯）
     const explains = actual.findings.length > 0;
     if (actual.verdict !== 'PASS' && explains) {

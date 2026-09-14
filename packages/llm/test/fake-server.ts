@@ -187,9 +187,13 @@ export const behaviors = {
     return () => {
       n++;
       if (n <= times) {
+        // 显式标注类型：三元两边的推断结果是 `{'retry-after': string} | {'retry-after'?: undefined}`，
+        // 后者因为那个 optional undefined 与 `Record<string, string>` 不相容。
+        const headers: Record<string, string> =
+          retryAfterSec !== undefined ? { 'retry-after': String(retryAfterSec) } : {};
         return {
           status: 429,
-          headers: retryAfterSec !== undefined ? { 'retry-after': String(retryAfterSec) } : {},
+          headers,
           body: { error: { message: 'Rate limit reached', type: 'rate_limit_error' } },
         };
       }

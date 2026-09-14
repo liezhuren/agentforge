@@ -191,10 +191,18 @@ async function writeReport(summary: BenchSummary): Promise<void> {
       lines.push('| 样本 | 注入的幻觉 | 期望 | 结果 | 实际 |');
       lines.push('|---|---|---|---|---|');
     }
+    const exp = r.sample.expect;
+    // 逐 kind 显式展开，而不是 `kind === 'clean' ? A : B` ——
+    // 后者的 B 分支仍是 `detect | not-pass` 的联合，访问 `atLeast` 在类型上不成立
+    // （`not-pass` 没有这个字段）。三档各自的期望其实不一样，写开了也更好读。
+    const expected =
+      exp.kind === 'clean'
+        ? '无硬失败'
+        : exp.kind === 'detect'
+          ? `${exp.anchorId} ≥ ${exp.atLeast}`
+          : `${exp.anchorId} 不得 PASS`;
     lines.push(
-      `| \`${r.sample.id}\`<br>${r.sample.title} | ${r.sample.injection.replace(/\|/g, '\\|')} | ${
-        r.sample.expect.kind === 'clean' ? '无硬失败' : `${r.sample.expect.anchorId} ≥ ${r.sample.expect.atLeast}`
-      } | ${r.outcome} | ${r.verdicts.map((v) => `${v.anchorId}=${v.verdict}`).join(' ')} |`,
+      `| \`${r.sample.id}\`<br>${r.sample.title} | ${r.sample.injection.replace(/\|/g, '\\|')} | ${expected} | ${r.outcome} | ${r.verdicts.map((v) => `${v.anchorId}=${v.verdict}`).join(' ')} |`,
     );
     if (r.outcome !== 'TP' && r.outcome !== 'TN') {
       lines.push(`| | | | | ${r.detail.replace(/\|/g, '\\|').slice(0, 220)} |`);

@@ -21,6 +21,11 @@ import type {
   ArtifactKind,
   ArtifactMeta,
   CodeScope,
+  // Requirement 用来取 status 的联合类型。
+  // 原写法是 `RequirementDoc['requirements'][number]['status']` ——
+  // 那个类型**根本不存在**，纯粹是凭空写出来的名字；
+  // 因为只出现在类型位置，运行时被擦除，所以它从来没报过错。
+  Requirement,
   RunId,
 } from './types.ts';
 import { ARTIFACT_KINDS, FREEZABLE_KINDS, SINGLETON_KINDS, WRITE_PERMISSIONS } from './types.ts';
@@ -206,7 +211,7 @@ export class ArtifactStore {
    * 编排器只能改「这条需求的验收状态」，不能改需求文字或验收方式。
    */
   async markRequirementsStatus(
-    updates: Array<{ id: string; status: RequirementDoc['requirements'][number]['status'] }>,
+    updates: Array<{ id: string; status: Requirement['status'] }>,
   ): Promise<Artifact | null> {
     const head = this.head('Requirement');
     if (!head) return null;

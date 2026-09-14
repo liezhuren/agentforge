@@ -25,5 +25,10 @@
   "workspaces": [
     "packages/*"
   ],
-  "comment": "apps/web 刻意不列入 workspace：控制台需要 React/Vite 工具链，而引擎（packages/*）保持零依赖、node 直接可跑。两者独立安装、互不影响。"
+  "comment": "apps/web 刻意不列入 workspace：控制台需要 React/Vite 工具链，而引擎（packages/*）保持零依赖、node 直接可跑。两者独立安装、互不影响。",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  },
+  "comment:devDependencies": "**只有 `npm run typecheck` 需要这两个包**。`npm test`、全部 demo、幻觉靶场、P6 自举验证都**不需要 npm install** —— 引擎是零运行时依赖的，这是它刻意的设计约束。"
 }

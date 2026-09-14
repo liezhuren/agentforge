@@ -22,7 +22,7 @@ import type {
   ArtifactId,
   AnchoredReviewDoc,
   DirectiveRecord,
-  EventBus,
+  Falsifier,
   HostPolicy,
   ProjectProfile,
   RoleId,
@@ -31,6 +31,8 @@ import type {
   TestReportDoc,
   WorkOrder,
 } from '../../core/src/types.ts';
+// EventBus 是 events.ts 里的类，不在 types.ts 里（原写法指向不存在的成员）
+import type { EventBus } from '../../core/src/events.ts';
 import { DEFAULT_HOST_POLICY } from '../../core/src/types.ts';
 import { ArtifactStore, materializeFiles } from '../../core/src/store.ts';
 import {

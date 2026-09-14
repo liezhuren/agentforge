@@ -7,17 +7,12 @@
  *  - 角色之间没有对话通道，只有 produce/repair 两个动作，产物是类型化工件
  */
 
-import type {
-  ArtifactKind,
-  CodeScope,
-  LlmRequest,
-  LlmResponse,
-  ProjectProfile,
-  RoleId,
-  StageId,
-  WorkOrder,
-} from '../../core/src/types.ts';
+import type { ArtifactKind, CodeScope, ProjectProfile, RoleId, StageId, WorkOrder } from '../../core/src/types.ts';
 import type { ArtifactStore } from '../../core/src/store.ts';
+// LlmRequest / LlmResponse 属于 llm 包，不在 core 里。
+// 原来写 `from '../../core/src/types.ts'` —— 那两个成员根本不存在，
+// 但因为 `import type` 会在运行时被整行擦除，这个错**从来没有暴露过**。
+import type { LlmRequest, LlmResponse } from '../../llm/src/types.ts';
 
 /** 角色可读工件矩阵：接口化通信的「读权限」一侧。 */
 export const READ_PERMISSIONS: Record<RoleId, ArtifactKind[]> = {

@@ -450,8 +450,17 @@ export class Gate {
     return bundle;
   }
 
-  private mkResult(r: GateOutput): GateOutput {
-    return r;
+  /**
+   * 构造 Gate 结果。
+   *
+   * `at` 由这里统一盖章，而不是让三个调用点各写一遍 ——
+   * 那三个调用点**一个都没写**（`GateResult.at` 是必填字段），
+   * 所以事件流里的每次 `gate.evaluated` 都带着 `at: undefined`。
+   * 这类「类型上要求、运行时从未被赋值的字段」是零依赖 + 类型剥离环境下最难发现的一种缺陷：
+   * 编译器是唯一能看见它的地方，而这个项目的编译器此前恰好是坏的。
+   */
+  private mkResult(r: Omit<GateOutput, 'at'> & { at?: string }): GateOutput {
+    return { at: new Date().toISOString(), ...r } as GateOutput;
   }
 
   private async record(result: GateOutput): Promise<void> {

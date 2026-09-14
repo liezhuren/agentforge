@@ -963,7 +963,12 @@ async function probeRuntime(
     await outFd.close().catch(() => {});
     await errFd.close().catch(() => {});
     await rm(dir, { recursive: true, force: true }).catch(() => {});
-    return { ok: false, message: `服务进程无法启动：${(err as Error).message}` };
+    return {
+      ok: false,
+      message: `服务进程无法启动：${(err as Error).message}`,
+      stdout: '',
+      stderr: '',
+    };
   }
 
   // spawn 失败是异步事件 —— 不挂这个监听，整个进程会被未处理的 error 打死

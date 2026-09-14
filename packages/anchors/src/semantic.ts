@@ -14,7 +14,7 @@
  * 而是让该条判定**整条作废**（INVALID_EVIDENCE）。这让「编造证据」无法得分。
  */
 
-import type { AnchorFinding, Artifact, ContractDoc, PrdDoc, Requirement, TaskGraph } from '../../core/src/types.ts';
+import type { AnchorFinding, Artifact, ContractDoc, PrdDoc, Requirement, RoleId, TaskGraph } from '../../core/src/types.ts';
 import { ROUNDTABLE_TRIGGERS } from '../../core/src/types.ts';
 import {
   attributeByPath,
@@ -41,8 +41,16 @@ function taskGraph(ctx: AnchorContext): TaskGraph | null {
   return a ? (a.content as TaskGraph) : null;
 }
 
-/** 机械归因：某条需求由谁负责实现（从任务图推断）。 */
-function ownerOfRequirement(ctx: AnchorContext, reqId: string): string {
+/**
+ * 机械归因：某条需求由谁负责实现（从任务图推断）。
+ *
+ * 返回类型必须是 `RoleId | 'UNRESOLVED'`，不能是宽泛的 `string` ——
+ * 它直接喂给 `AnchorFinding.targetRole`，而那个字段的类型是
+ * `RoleId | 'UNRESOLVED'`，Gate 会拿它去**派工单**。
+ * 写成 `string` 时那 5 处赋值都过不了类型检查，而运行时又看不出任何区别；
+ * 一旦真出现拼错的角色名，工单就会派给一个不存在的角色。
+ */
+function ownerOfRequirement(ctx: AnchorContext, reqId: string): RoleId | 'UNRESOLVED' {
   const tg = taskGraph(ctx);
   const t = tg?.tasks.find((x) => x.requirementIds.includes(reqId));
   return t?.owner ?? 'UNRESOLVED';

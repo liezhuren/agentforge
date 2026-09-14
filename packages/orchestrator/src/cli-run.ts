@@ -177,9 +177,17 @@ export async function runCli(io: CliIO): Promise<number> {
       return 1;
     }
     const replayer = new ReplayProvider({ records });
-    providers = Object.fromEntries(
-      (['pm', 'frontend', 'backend', 'test', 'host'] as const).map((r) => [r, replayer]),
-    ) as typeof providers;
+    // 显式列出五个角色，而不是 `Object.fromEntries(...) as ...`：
+    // 后者会产生一个 `{[k: string]: ReplayProvider}`，与 `Record<RoleId, LlmProvider>`
+    // 在类型上并不相容（索引签名 vs 必需键），只能靠断言硬压过去 ——
+    // 那等于把「角色表漏了一个」这类错误推到运行时。写开了编译器就能替我们看着。
+    providers = {
+      pm: replayer,
+      frontend: replayer,
+      backend: replayer,
+      test: replayer,
+      host: replayer,
+    };
     out('');
     out(`${C.cyan}回放模式${C.reset}：使用 ${records.length} 条已录制调用，不会发起任何真实请求。`);
     out('');

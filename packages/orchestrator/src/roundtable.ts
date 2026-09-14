@@ -17,7 +17,6 @@ import type {
   AnchorId,
   AnchorRunResult,
   ArtifactId,
-  CommandPolicy,
   ContractDoc,
   EvidenceRef,
   Falsifier,
@@ -30,7 +29,8 @@ import type {
   StageId,
 } from '../../core/src/types.ts';
 import { TRIGGER_DESCRIPTIONS } from '../../core/src/types.ts';
-import { DEFAULT_COMMAND_POLICY, execCapture } from '../../core/src/exec.ts';
+// CommandPolicy 定义在 exec.ts 里，不在 types.ts（原写法指向不存在的成员）
+import { DEFAULT_COMMAND_POLICY, execCapture, type CommandPolicy } from '../../core/src/exec.ts';
 import type { AnchorContext } from '../../anchors/src/index.ts';
 import { verifyEvidence } from '../../anchors/src/index.ts';
 import type { Logger } from '../../core/src/logger.ts';

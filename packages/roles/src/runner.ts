@@ -17,7 +17,9 @@ import {
   validateSchema,
   type JsonSchema,
 } from '../../core/src/schemas.ts';
-import type { ArtifactKind, LlmRequest, RoleId, WorkOrder } from '../../core/src/types.ts';
+import type { ArtifactKind, RoleId, WorkOrder } from '../../core/src/types.ts';
+// LlmRequest 属于 llm 包（原写成从 core 导入 —— 那个成员不存在，且运行时被擦除所以从不报错）
+import type { LlmRequest } from '../../llm/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
 import { silentLogger } from '../../core/src/logger.ts';
 import type { LlmProvider } from '../../llm/src/types.ts';

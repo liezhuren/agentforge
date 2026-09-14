@@ -2,6 +2,10 @@
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023"],
+    // 引擎代码只在 Node 里跑，没有 DOM。types 必须显式声明：
+    // 不写的话 `console`/`process`/`node:fs` 全部报「找不到名称」，
+    // 而那会让 `npm run typecheck` 一上来就红一片 —— 于是没人看它（见下）。
+    "types": ["node"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
@@ -15,6 +19,21 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["packages/**/*.ts", "apps/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "**/node_modules", "workspace", "runs"]
+  /**
+   * 这个配置检查的是**引擎与脚本**（零依赖、Node 原生类型剥离直接跑的代码）。
+   *
+   * `apps/web` 被刻意排除：它是独立工程，有自己的 tsconfig（DOM lib、jsx、
+   * vite/client 类型）与自己的一套依赖。用引擎的配置去检查它会得到一堆假错误
+   * （`Cannot find module 'react'`、`Cannot find name 'window'`），
+   * 而那些错误会把真正的类型问题淹掉。
+   *
+   * ⚠️ 背景（值得记）：这个脚本**曾经是坏的** —— 根 package.json 声明了
+   * `typecheck: tsc -p tsconfig.json`，但既没有 devDependencies 也没有 `types: ["node"]`，
+   * 于是新机器上它连 `tsc` 都找不到；就算能跑也只输出一片「找不到名称」。
+   * 一个永远红的检查等于没有检查：**引擎代码因此从未被类型检查过**，
+   * 直到有人审计才发现 DecisionKind 里缺了 5 个实际在用的值、若干 import
+   * 指向根本不存在的类型（类型导入在运行时会被擦除，所以从不报错）。
+   */
+  "include": ["packages/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "**/node_modules", "workspace", "runs", "apps"]
 }
