@@ -15,9 +15,9 @@ import {
   type Objection,
   type ProjectProfile,
 } from '../../core/src/index.ts';
-import { ANCHOR_INDEX, createAnchorContext, runAnchors, type AnchorContext } from '../../anchors/src/index.ts';
+import { ANCHOR_INDEX, A_LAYER_IDS, createAnchorContext, runAnchors, type AnchorContext } from '../../anchors/src/index.ts';
 import { HostLedger } from '../src/ledger.ts';
-import { MechanicalJudge, checkContradiction } from '../src/judge.ts';
+import { MechanicalJudge, checkContradiction, A_LAYER_DOMAINS } from '../src/judge.ts';
 
 // ════════════════════════════════════════════════════════════════
 
@@ -602,6 +602,100 @@ test('矛盾检测：命中领域关键词 + 锚点 PASS → 判矛盾并指明�
       assert.equal(c.contradicted, true, claim);
       assert.equal(c.anchorId, expected);
     }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// 矛盾检测表本身：每个锚点都要在表里（否则它的 PASS 换不来任何否决权）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * 这条测试守的是一个「清单完整性」问题，而不是某个关键词。
+ *
+ * 实测发现表里只有 A1/A2/A3/A4/A5/A7 —— **A6 与 A8 不在**。
+ * 后果不是「漏了一个检查」，而是：主理人声称「服务根本起不来」而 A6 明明 PASS 时，
+ * 走不到那条「零成本、必然成立」的机械证伪路径，只能退回 falsifier 兜底
+ * （要真起一次子进程才能判）。本来是白送的判定，变成了要花钱的判定。
+ *
+ * 这类「硬编码清单不完整」在本项目里出现过多次（归因目录表 docs/07 §L10、
+ * DecisionKind docs/07 §N5），所以这里用一条测试把它钉住：
+ * **凡是会产出 PASS 的 A 层锚点，都必须在矛盾检测表里有位置。**
+ */
+test('矛盾检测表：每个 A 层锚点都有领域条目（清单完整性）', () => {
+  const covered = new Set(A_LAYER_DOMAINS.map((d) => d.anchorId));
+  for (const id of A_LAYER_IDS) {
+    assert.ok(covered.has(id), `${id} 不在 A_LAYER_DOMAINS 里 —— 它的 PASS 无法否决任何异议`);
+  }
+  // 锚点清单本身也钉一下：新增 A 层锚点时必须同步考虑是否要进这张表
+  // （A6/A8 就是漏掉的实例）。
+  assert.deepEqual(A_LAYER_IDS, ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8']);
+});
+
+test('矛盾检测：A6 已 PASS 时，「服务起不来」是可机械证伪的假话', async () => {
+  const { f } = await setup();
+  try {
+    // A6 的真正 PASS 需要真起一次服务（P6 自举验证里覆盖了那条真实路径）。
+    // 这里只需要它「已 PASS」这个事实，所以直接构造结果 —— 本测试验的是关键词映射，
+    // 不是探针本身。
+    const base = (id: 'A4' | 'A5' | 'A6' | 'A8', verdict: 'PASS' | 'SKIPPED') => ({
+      anchorId: id,
+      runId: `run-test-${id}`,
+      subjects: [],
+      contentHashes: {},
+      verdict,
+      findings: [],
+      method: 'test-fixture',
+      authority: 'authoritative' as const,
+      at: new Date().toISOString(),
+      durationMs: 0,
+    });
+
+    const withA6 = [base('A6', 'PASS')];
+    const claim = '服务进程根本起不来，健康检查连不上';
+    const c = checkContradiction(objection({ claim }), withA6);
+    assert.equal(c.contradicted, true, claim);
+    assert.equal(c.anchorId, 'A6');
+
+    // 保守行为必须保持：A6 未 PASS 时这条异议不受影响
+    assert.equal(
+      checkContradiction(objection({ claim }), [base('A6', 'SKIPPED')]).contradicted,
+      false,
+      'A6 没 PASS 时它没有权威，不得据此判主理人撒谎',
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('矛盾检测：A8 已 PASS 时，「产出改掉了 package.json 的声明」是可机械证伪的假话', async () => {
+  const { f } = await setup();
+  try {
+    const a8 = {
+      anchorId: 'A8' as const,
+      runId: 'run-test-A8',
+      subjects: [],
+      contentHashes: {},
+      verdict: 'PASS' as const,
+      findings: [],
+      method: 'test-fixture',
+      authority: 'authoritative' as const,
+      at: new Date().toISOString(),
+      durationMs: 0,
+    };
+
+    const c = checkContradiction(objection({ claim: '产出把 package.json 里的 agentforge 声明删掉了' }), [a8]);
+    assert.equal(c.contradicted, true);
+    assert.equal(c.anchorId, 'A8');
+
+    // 反向保护：A8 只管「基准有没有被动」，不管「命令存不存在」。
+    // 这类断言必须**不**被判成矛盾，否则会误伤诚实的异议（误报代价是真报的两倍）。
+    assert.equal(
+      checkContradiction(objection({ claim: 'package.json 里的测试命令在这个环境跑不起来' }), [a8]).contradicted,
+      false,
+      'A8 不检查命令是否存在，超出它权威范围的断言不得被证伪',
+    );
   } finally {
     await f.cleanup();
   }
