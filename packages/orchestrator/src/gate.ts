@@ -88,6 +88,15 @@ export type GateInput = {
   directives?: DirectiveRecord[];
   /** 上一轮 Gate 的硬失败签名（识别「同一批失败反复出现」，用来避免无效重试与反复开会）。 */
   previousHardFailureSignature?: string | null;
+  /**
+   * 预计算的 A 层锚点结果。给了就直接用，只补跑 B 层。
+   *
+   * 用途：编排器需要在**叫主理人之前**知道 A 层健不健康 ——
+   * 因为 A 层有硬失败时 Gate 会在读到主理人结论之前就返回，
+   * 那次 LLM 调用（验证器 + 主理人，占总 token 的约四分之一）纯属白花。
+   * 实测 12 轮里 39 次主理人调用中有 33 次的结果没有任何人读。
+   */
+  precomputedALayer?: AnchorRunResult[];
   roundtableAttempted?: boolean;
   roundtablesHeld?: number;
   humanAvailable?: boolean;
@@ -112,6 +121,31 @@ export class Gate {
   constructor(deps: GateDeps) {
     this.deps = deps;
     this.logger = deps.logger ?? silentLogger('gate');
+  }
+
+  /**
+   * 只跑本阶段的 **A 层锚点**，返回结果。
+   *
+   * 存在的唯一理由是**省钱**：REVIEW 阶段的语义验证与主理人审查（都要调 LLM）
+   * 只在 A 层健康时才有意义 —— A 层一旦有硬失败，Gate 会在读到它们之前就返回
+   * （「编译器已经说清的问题不必让 LLM 复述」）。
+   *
+   * 而原先的执行顺序是**先花钱、再决定要不要用**：
+   * `refreshReview()` 无条件调用，然后 Gate 把结论丢掉。
+   * 实测 12 轮里 39 次主理人调用有 33 次被丢弃（llm-8 一轮丢 16 次），
+   * 约 43 万 token 白烧 —— 而「主理人 16.2% 的 token 占比」这个数字本身就说明它不便宜。
+   *
+   * 判断依据必须是**同一批事实**：这里跑出来的结果会通过 `precomputedALayer`
+   * 原样交回 `evaluate`，A 层绝不重跑（见 evaluate 里的说明）。
+   */
+  async runALayer(stage: StageId, proposals: SemanticProposals = {}): Promise<AnchorRunResult[]> {
+    const ids = STAGE_ANCHORS[stage].filter((id) => id.startsWith('A'));
+    if (ids.length === 0) return [];
+    const ctx = this.deps.makeAnchorContext(proposals);
+    return runAnchors(
+      ctx,
+      ids.map((id) => ANCHOR_INDEX.get(id)!).filter(Boolean),
+    );
   }
 
   async evaluate(input: GateInput): Promise<GateOutput> {
@@ -145,13 +179,37 @@ export class Gate {
     // ── 1. 跑本阶段的锚点 ────────────────────────────────────────
     const anchorIds = STAGE_ANCHORS[stage];
     const ctx = this.deps.makeAnchorContext(input.proposals ?? {});
-    const anchors =
-      anchorIds.length === 0
-        ? []
-        : await runAnchors(
-            ctx,
-            anchorIds.map((id) => ANCHOR_INDEX.get(id)!).filter(Boolean),
-          );
+    const pre = input.precomputedALayer;
+
+    let anchors: AnchorRunResult[];
+    if (pre && pre.length > 0) {
+      /**
+       * A 层已由编排器预先跑过（它需要先知道 A 层健不健康，才决定值不值得叫主理人）。
+       * 这里只补跑 B 层。
+       *
+       * ⚠️ **绝不重跑 A 层。** A4/A5/A6 会真的编译、真的跑测试、真的起服务 ——
+       * 重跑既贵（比一次 LLM 调用便宜，但比什么都贵），又可能给出**不一致**的结果
+       * （测试有随机性、端口可能被占）。用两次不同的 A 层结论驱动同一个 Gate，
+       * 会让「为什么这次判过了、上次判不过」变成无法解释的问题。
+       */
+      const bIds = anchorIds.filter((id) => !id.startsWith('A'));
+      const bResults =
+        bIds.length === 0
+          ? []
+          : await runAnchors(
+              ctx,
+              bIds.map((id) => ANCHOR_INDEX.get(id)!).filter(Boolean),
+            );
+      anchors = [...pre, ...bResults];
+    } else {
+      anchors =
+        anchorIds.length === 0
+          ? []
+          : await runAnchors(
+              ctx,
+              anchorIds.map((id) => ANCHOR_INDEX.get(id)!).filter(Boolean),
+            );
+    }
 
     const aAnchors = anchors.filter((a) => a.anchorId.startsWith('A'));
     const hardFailures = aAnchors.filter(isHardFailure);

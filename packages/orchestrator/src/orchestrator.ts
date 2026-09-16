@@ -49,7 +49,7 @@ import { DecisionLog } from '../../core/src/decisionlog.ts';
 import { EventBus as Bus } from '../../core/src/events.ts';
 import { Logger } from '../../core/src/logger.ts';
 import { roundtableResolutionSchema, roundtableStatementSchema } from '../../core/src/schemas.ts';
-import { createAnchorContext, type AnchorContext, type SemanticProposals } from '../../anchors/src/index.ts';
+import { createAnchorContext, isHardFailure, type AnchorContext, type SemanticProposals } from '../../anchors/src/index.ts';
 import type { LlmProvider } from '../../llm/src/types.ts';
 import type { RoleContext, RoleRunner } from '../../roles/src/types.ts';
 import type { SemanticVerifier } from '../../roles/src/verify.ts';
@@ -495,53 +495,94 @@ export class Orchestrator {
           break;
         }
 
+        /**
+         * ── profile 必须在**任何锚点之前**刷新 ──────────────────────
+         *
+         * 代码已经落盘，刷新后 A4/A5/A6 才能从「没得查（SKIPPED）」变成「真的查」。
+         *
+         * 位置被**提前过一次**：原先它在 REVIEW 的审查之后。
+         * 那样的话下面的 A 层预检会拿**过期的 profile** 去判断健不健康 ——
+         * 而「profile 过期导致 A4/A5 在最需要它们的路径上全程 SKIPPED」
+         * 正是 docs/07 §L3 记过的真实缺陷。
+         * **什么时候跑 profile、什么时候跑锚点，两者的先后是设计的一部分，不是实现细节。**
+         */
+        await this.refreshEffectiveProfile();
+
         // REVIEW 阶段每个 cycle 都要重做语义验证与对抗审查：
         // 它们锚定的是**当前**工件内容，角色修复代码后旧判定就过期了。
-        let reviewInput: { proposals: SemanticProposals; hostReview: AnchoredReviewDoc | null };
+        let reviewInput: {
+          proposals: SemanticProposals;
+          hostReview: AnchoredReviewDoc | null;
+          precomputedALayer?: AnchorRunResult[];
+        };
         if (stage === 'REVIEW') {
-          const rr = await this.refreshReview();
-          if (!rr.ok) {
-            // 「调不动模型」与「模型答不对」是两回事：前者重试无意义，直接走逃生层。
-            this.logger.warn(`[${stage}] 审查输入刷新失败：${rr.reason}`);
-            trace.blockedReasons.push(`review-failed: ${rr.reason}`);
-            const escaped = await this.escape({
-              stage,
-              reason: 'review-refresh-failed',
-              summary: rr.reason,
-              agenda: [`阶段 ${stage} 的语义验证无法完成`],
-              objections: [],
-              arbitration: [],
-              anchors: [],
-            });
-            if (escaped === 'HOLD') {
-              delivery = 'held';
-              trace.finalAction = 'HOLD';
-              break stageLoop;
+          /**
+           * ── 先花便宜的钱，再决定要不要花贵的 ─────────────────────
+           *
+           * `refreshReview()` 会调两次 LLM（语义验证器 + 主理人），是单个阶段里最贵的一步。
+           * 而它的结论**只在 A 层健康时才会被读到** —— A 层一旦有硬失败，
+           * Gate 会在读到它们之前就返回（「编译器已经说清的问题不必让 LLM 复述」）。
+           *
+           * 原先的顺序是**先花钱、再决定要不要用**：无条件调用 `refreshReview()`，
+           * 然后 Gate 把结论丢掉。实测代价（12 轮真实运行）：
+           * 39 次主理人调用中有 **33 次结果没有任何人读**，llm-8 一轮就丢 16 次；
+           * 按主理人 16.2% 的 token 占比估算约 43 万 token 白烧（≈1.5 轮完整运行）。
+           *
+           * 现在先跑**便宜的** A 层锚点（真实编译/测试/探针，但不烧 token），
+           * 用它的结论决定要不要叫主理人。跑出来的结果通过 `precomputedALayer`
+           * 原样交回 Gate，**A 层不重跑** —— 否则既浪费又可能给出不一致的结论。
+           */
+          const preA = await this.gate.runALayer(stage);
+          if (preA.some(isHardFailure)) {
+            this.logger.info(
+              `[REVIEW] A 层已有硬失败（${preA.filter(isHardFailure).map((a) => a.anchorId).join('/')}），` +
+                `跳过语义验证与主理人审查 —— 它们的结论会被 Gate 直接丢弃，不必花钱`,
+            );
+            trace.blockedReasons.push('review-skipped-a-layer-hard-fail');
+            reviewInput = { proposals: {}, hostReview: null, precomputedALayer: preA };
+          } else {
+            const rr = await this.refreshReview();
+            if (!rr.ok) {
+              // 「调不动模型」与「模型答不对」是两回事：前者重试无意义，直接走逃生层。
+              this.logger.warn(`[${stage}] 审查输入刷新失败：${rr.reason}`);
+              trace.blockedReasons.push(`review-failed: ${rr.reason}`);
+              const escaped = await this.escape({
+                stage,
+                reason: 'review-refresh-failed',
+                summary: rr.reason,
+                agenda: [`阶段 ${stage} 的语义验证无法完成`],
+                objections: [],
+                arbitration: [],
+                anchors: [],
+              });
+              if (escaped === 'HOLD') {
+                delivery = 'held';
+                trace.finalAction = 'HOLD';
+                break stageLoop;
+              }
+              if (escaped === 'AWAIT_HUMAN') {
+                delivery = 'awaiting-human';
+                trace.finalAction = 'AWAIT_HUMAN';
+                break stageLoop;
+              }
+              delivery = 'with-debt';
+              this.ledger.endStage({ aLayerHealthy: false });
+              stage = nextStageOf(stage);
+              break;
             }
-            if (escaped === 'AWAIT_HUMAN') {
-              delivery = 'awaiting-human';
-              trace.finalAction = 'AWAIT_HUMAN';
-              break stageLoop;
-            }
-            delivery = 'with-debt';
-            this.ledger.endStage({ aLayerHealthy: false });
-            stage = nextStageOf(stage);
-            break;
+            reviewInput = { ...rr, precomputedALayer: preA };
           }
-          reviewInput = rr;
         } else {
           reviewInput = { proposals: produced.proposals, hostReview: null };
         }
-
-        // 代码已经落盘，现在重新推导 profile —— 让 A4/A5/A6 从「没得查（SKIPPED）」
-        // 变成「真的查」。必须在 gate.evaluate 之前。
-        await this.refreshEffectiveProfile();
 
         const gateOut = await this.gate.evaluate({
           stage,
           sequence: cycles,
           proposals: reviewInput.proposals,
           hostReview: reviewInput.hostReview,
+          // A 层已经跑过就交回结果（REVIEW 阶段），Gate 只补跑 B 层 —— 绝不重跑 A 层。
+          ...(reviewInput.precomputedALayer ? { precomputedALayer: reviewInput.precomputedALayer } : {}),
           directives: this.directives,
           previousHardFailureSignature: this.lastHardFailureSignature,
           roundtablesHeld: this.roundtablesHeld,

@@ -533,6 +533,113 @@ test('真人 let-it-pass：用一次就消耗掉，不会把之后的失败也�
   }
 });
 
+// ════════════════════════════════════════════════════════════════
+// 先花便宜的钱，再决定要不要花贵的
+// ════════════════════════════════════════════════════════════════
+//
+// `refreshReview()` 会调**两次** LLM（语义验证器 + 主理人），是单个阶段里最贵的一步。
+// 而它的结论**只在 A 层健康时才会被读到** —— A 层一旦有硬失败，
+// Gate 会在读到它们之前就返回（「编译器已经说清的问题不必让 LLM 复述」）。
+//
+// 原先的顺序是先花钱、再决定要不要用：无条件调用 `refreshReview()`，然后 Gate 丢掉结论。
+// 实测代价（12 轮真实运行）：39 次主理人调用中有 **33 次结果没有任何人读**。
+
+/** A6 只在 REVIEW 阶段跑，所以用「服务起不来」制造一个**只在 REVIEW 出现**的硬失败。 */
+const REVIEW_ONLY_FAILURE = {
+  run: { cmd: process.execPath, args: ['-e', 'process.exit(0)'], healthUrl: 'http://127.0.0.1:1/health' },
+};
+
+test('省钱：REVIEW 阶段 A 层已有硬失败时，不叫语义验证器与主理人（它们的结论会被丢弃）', async () => {
+  const events: ForgeEvent[] = [];
+  const bus = new EventBus();
+  bus.on((e) => events.push(e));
+
+  const { root, provider, orch, cleanup } = await setup(happyScript(), {
+    profileOverride: REVIEW_ONLY_FAILURE as never,
+    bus,
+  });
+  try {
+    const summary = await orch.run();
+
+    // ① 两次 LLM 调用都**没有发生** —— 这就是省钱的地方
+    assert.equal(provider.callCount('verify:requirements'), 0, '语义验证的结论会被 Gate 丢弃，不该花钱');
+    assert.equal(provider.callCount('produce:AnchoredReview'), 0, '主理人的结论会被 Gate 丢弃，不该花钱');
+
+    // ② 但 A 层**真的跑了** —— 那是判断依据，不能省。
+    //    A6 只在 REVIEW 阶段跑，且它真的去起了服务（起不来才 FAIL）。
+    const a6 = events
+      .filter((e): e is Extract<ForgeEvent, { t: 'anchor.ran' }> => e.t === 'anchor.ran')
+      .map((e) => e.result)
+      .filter((r) => r.anchorId === 'A6');
+    assert.ok(a6.length > 0, 'A6 必须真的跑过 —— 它正是这次判断的依据');
+    assert.equal(a6[0]!.verdict, 'FAIL', '服务起不来，A6 应当 FAIL');
+
+    // ③ 必须留下痕迹说明「这里跳过了」—— 否则又是一次静默行为
+    const review = summary.traces.find((t) => t.stage === 'REVIEW')!;
+    assert.ok(
+      review.blockedReasons.includes('review-skipped-a-layer-hard-fail'),
+      `必须记录「因 A 层硬失败而跳过审查」，实际：${JSON.stringify(review.blockedReasons)}`,
+    );
+    assert.equal(review.hostInvoked, false, '主理人根本没被叫来，不该标记为已唤醒');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('对照：A 层健康时，语义验证与主理人**照常**被调用', async () => {
+  const { root, provider, orch, cleanup } = await setup(happyScript());
+  try {
+    const summary = await orch.run();
+    assert.equal(summary.delivery, 'complete');
+    assert.ok(provider.callCount('verify:requirements') >= 1, 'A 层健康时语义验证必须跑');
+    assert.ok(provider.callCount('produce:AnchoredReview') >= 1, 'A 层健康时主理人必须被唤醒');
+    const review = summary.traces.find((t) => t.stage === 'REVIEW')!;
+    assert.ok(!review.blockedReasons.includes('review-skipped-a-layer-hard-fail'));
+    assert.equal(review.hostInvoked, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('A 层不重跑：预检与 Gate 合计只真实执行 A4/A5/A6 一次', async () => {
+  // 预检跑一次、Gate 里再跑一次的话，A4/A5/A6 会真的编译/跑测试/起服务**两次** ——
+  // 既浪费，又可能给出**不一致**的结论（测试有随机性、端口可能被占），
+  // 而用两次不同的 A 层结论驱动同一个 Gate，会让「为什么这次判过了、上次判不过」
+  // 变成无法解释的问题。
+  //
+  // 断言：每个 Gate 的 A 层锚点各出现**恰好一次**（REVIEW 只进一次的场景下）。
+  const events: ForgeEvent[] = [];
+  const bus = new EventBus();
+  bus.on((e) => events.push(e));
+
+  const { root, orch, cleanup } = await setup(happyScript(), { bus });
+  try {
+    const summary = await orch.run();
+    const gates = events.filter((e) => e.t === 'gate.evaluated').length;
+    const counts = new Map<string, number>();
+    for (const e of events) {
+      if (e.t !== 'anchor.ran') continue;
+      counts.set(e.result.anchorId, (counts.get(e.result.anchorId) ?? 0) + 1);
+    }
+    // 每个 Gate 最多跑一次同名锚点；A 层预检也会记一次，
+    // 所以「运行次数」的上界 = Gate 次数 + REVIEW 的预检次数。
+    const reviewGates = summary.traces.filter((t) => t.stage === 'REVIEW').reduce((n, t) => n + t.cycles, 0);
+    for (const id of ['A4', 'A5', 'A6', 'A1']) {
+      const n = counts.get(id) ?? 0;
+      assert.ok(
+        n <= gates + reviewGates,
+        `${id} 跑了 ${n} 次，超过「Gate 次数 ${gates} + REVIEW cycle 数 ${reviewGates}」—— A 层被重跑了`,
+      );
+    }
+    // 最关键的一条：REVIEW 的预检结果被 Gate **复用**了，而不是重跑。
+    // 若被重跑，A6 的运行次数会是「进入 REVIEW 的次数 × 2」。
+    const reviewCycles = summary.traces.find((t) => t.stage === 'REVIEW')?.cycles ?? 0;
+    assert.equal(counts.get('A6') ?? 0, reviewCycles, `A6 应当只在 REVIEW 每个 cycle 跑一次，实际 ${counts.get('A6')} 次（REVIEW cycles=${reviewCycles}）`);
+  } finally {
+    await cleanup();
+  }
+});
+
 test('端到端：注入幻觉符号 → A 层硬失败时不唤醒主理人，直接机械派工单', async () => {
   const hallucinated = API_CODE.replace(
     "import { padLeft } from 'leftpad-real';",
