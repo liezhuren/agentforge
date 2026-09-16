@@ -86,7 +86,7 @@ export type GateInput = {
   hostReview?: AnchoredReviewDoc | null;
   /** 当前生效的真人建议书。 */
   directives?: DirectiveRecord[];
-  /** 上一轮 Gate 的硬失败签名（T4：同类失败反复出现且归因分散）。 */
+  /** 上一轮 Gate 的硬失败签名（识别「同一批失败反复出现」，用来避免无效重试与反复开会）。 */
   previousHardFailureSignature?: string | null;
   roundtableAttempted?: boolean;
   roundtablesHeld?: number;
@@ -165,23 +165,29 @@ export class Gate {
       const roles = Object.keys(attribution).filter((r) => r !== 'UNRESOLVED');
       const hasUnresolved = (attribution['UNRESOLVED'] ?? 0) > 0;
 
-      // ── 优先打回，圆桌只是兜底（真实 LLM 实测改正，docs/07 §L10）────
+      // ── 优先打回，圆桌只是兜底 ───────────────────────────────────
       //
-      // 原来的判定是 `roles.length >= 2 || hasUnresolved`，即**只要有一条归不了因**
-      // 就把整个阶段判定为「需要开会」。实测这是在自找麻烦：
-      // 同一轮里 A6 明明已经明确归到 backend、本可以直接打回返工，
-      // 却因为 A3/A4 归因缺失而陪着一起进圆桌 ——
-      // 圆桌要开会、要产决议、要校验，成本比打回高一到两个数量级。
+      // 判定演进过两次，两次都是因为「开会比返工贵一到两个数量级」：
       //
-      // 正确的优先级是：**能归因就打回，一条都归不了因才开会。**
-      //   - roles.length >= 2 → 真的是「互相甩锅」（多个角色都被指到），需要协商
-      //   - roles.length === 1 → 有明确责任方 ⇒ **打回**
-      //   - roles.length === 0 → 没有任何可打回的对象 ⇒ 这才需要圆桌
+      // 第一版：`roles.length >= 2 || hasUnresolved`
+      //   ⇒ 只要有一条归不了因，就把整个阶段拖进圆桌。
+      //   实测在自找麻烦：同一轮里 A6 明明已经明确归到 backend、本可以直接打回返工，
+      //   却因为 A3/A4 归因缺失而陪着一起进圆桌。（docs/07 §L10）
       //
-      // 注意最后一种情况里「部分归因缺失」不构成开会的理由：
-      // 打回已经归到的那部分，下一轮 Gate 会重新评估 ——
-      // 那时若只剩归不了的，再开会也不迟。**先做能做的事。**
-      const wantsRoundtable = roles.length >= 2 || roles.length === 0;
+      // 第二版：`roles.length >= 2 || roles.length === 0`
+      //   ⇒ 「多个角色都被指到」被当成「互相甩锅，需要协商」。
+      //   这个假设站不住：**甩锅同样可以同时打回给双方** ——
+      //   派工单的机制本来就支持一次派给多个角色（每个角色一张单），
+      //   根本不需要开会来解决。实测 12 轮里开了 15 场圆桌，绝大多数毫无必要。
+      //
+      // 现在：**只要能归因就先返工，一条都归不了因才开会。**
+      //   返工是确定的、便宜的、有明确验收条件的；开会要产决议、要校验决议，
+      //   而且大概率得出「都有责任」这种没法执行的东西。
+      //
+      // 同时保留一条保护：返工如果没改变任何东西（硬失败签名不变），
+      // 编排层会识别出来并转逃生流程 —— 也可能在那时才开圆桌。
+      // 所以顺序是「先试便宜的，不行再开会」，循环有界。
+      const wantsRoundtable = roles.length === 0;
 
       // ── 不再为「没变化的失败」反复开会 ──────────────────────────
       //
@@ -361,6 +367,9 @@ export class Gate {
   }
 
   private t4Reason(roles: string[], hasUnresolved: boolean): string {
+    // 现在只有「一个可归因对象都没有」才会走到这里（见 evaluate 里的说明）。
+    // 保留 hasUnresolved 分支是因为理论上 roles 非空但仍有 UNRESOLVED 条目时
+    // 也可能被别处调用；宁可把话说全，也不要给出一个不成立的解释。
     if (hasUnresolved && roles.length === 0) return '执行类锚点失败但机械归因完全失灵（无任何文件可归属）';
     if (hasUnresolved) return `执行类锚点失败，归因分散到 ${roles.join('/')}，且存在无法归属的问题`;
     return `执行类锚点失败，归因分散到 ${roles.length} 个角色（${roles.join('/')}），疑似互相甩锅`;

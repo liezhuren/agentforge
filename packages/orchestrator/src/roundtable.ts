@@ -141,7 +141,11 @@ export function inviteParticipants(
       (['frontend', 'backend'] as RoleId[]).forEach((r) => invited.add(r));
       break;
     case 'T4':
-      ctx.anchorFindings.forEach((f) => consider(f.targetRole));
+      // T4 现在只在「机械归因完全失灵」时触发（见 gate.ts 的说明），
+      // 所以 `anchorFindings` 里的 targetRole 基本都是 UNRESOLVED ——
+      // 拿它邀人等于没邀。既然**不知道谁该负责**，就让所有可能相关的角色到场，
+      // 与 T2（主理人归因不清）处理方式一致：这两种情况的本质是同一个问题。
+      (['pm', 'frontend', 'backend', 'test'] as RoleId[]).forEach((r) => invited.add(r));
       break;
     case 'T5':
       (ctx.contractImpact ?? ['pm', 'frontend', 'backend']).forEach((r) => invited.add(r));

@@ -443,7 +443,13 @@ export const directiveSchema: JsonSchema = {
   additionalProperties: false,
   required: ['kind', 'text'],
   properties: {
-    kind: { type: 'string', enum: ['requirement', 'constraint', 'override', 'resume', 'hold'] },
+    // 必须与 DIRECTIVE_KINDS 保持一致。
+    // `let-it-pass` 曾经缺席：界面把它列为「可用动作」，而这里和服务端都拒收它 ——
+    // 界面推荐了一个 API 会返回 400 的动作。
+    kind: {
+      type: 'string',
+      enum: ['requirement', 'constraint', 'override', 'resume', 'hold', 'let-it-pass'],
+    },
     text: { type: 'string', minLength: 1 },
     targetRefs: stringArray,
     constraints: stringArray,

@@ -1,6 +1,14 @@
 import { useState } from 'react';
 import { api, type FullState } from '../api.ts';
 
+/** 与 api.ts 的 directive 返回类型保持一致（服务端的机械裁决说明）。 */
+type DirectiveAdvisory = {
+  outcome: 'applied' | 'no-effect' | 'cannot-override-facts';
+  message: string;
+  blockingFacts?: Array<{ anchorId: string; code: string; message: string }>;
+  alternative?: string;
+};
+
 /**
  * 人类介入区 —— **必须首屏可达**。
  *
@@ -13,9 +21,17 @@ import { api, type FullState } from '../api.ts';
  */
 
 const KINDS: Array<{ kind: string; label: string; hint: string; danger?: boolean }> = [
-  { kind: 'resume', label: '解除阻断 · 强制推进', hint: '打破死锁的终极手段。优先级高于一切机器人意见。', danger: true },
+  { kind: 'resume', label: '解除阻断 · 强制推进', hint: '解除主理人的阻断权。注意：它管不了确定性失败（编译/测试/运行时），那些只看事实不看意见。', danger: true },
   { kind: 'hold', label: '暂停流水线', hint: '物理刹车：编排器在下一个阶段边界停下（不会强杀，避免半写状态）。', danger: true },
   { kind: 'override', label: '推翻某个决定', hint: '例如「不要按主理人的意思改，按原契约实现」。' },
+  {
+    kind: 'let-it-pass',
+    label: '明知有问题 · 继续推进',
+    hint:
+      '你有权承担风险。系统会照做 —— 但未解决的问题会被记为**技术债**，' +
+      '交付状态是「带债」而**不是「完整」**。系统不会替你把风险说成成功。',
+    danger: true,
+  },
   {
     kind: 'constraint',
     label: '追加硬约束',
@@ -33,21 +49,35 @@ export function HumanPanel({ state, onDone }: { state: FullState; onDone: () => 
   const [constraints, setConstraints] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [advisory, setAdvisory] = useState<DirectiveAdvisory | null>(null);
 
   const disabled = !state.runtime;
 
   async function submit() {
     setBusy(true);
     setMsg(null);
+    setAdvisory(null);
     try {
-      await api.directive({
+      const rec = await api.directive({
         kind,
         text,
         ...(kind === 'constraint' && constraints.trim()
           ? { constraints: constraints.split('\n').map((s) => s.trim()).filter(Boolean) }
           : {}),
       });
-      setMsg({ ok: true, text: '建议书已写入决策日志（append-only 哈希链，不可忽略、不可重新解释）' });
+      /**
+       * 必须把**机械裁决**显示出来，而不是一律回一句「已写入决策日志」。
+       *
+       * 以前人发一条 override，实际只关掉主理人的阻断权；如果人的本意是「让它过」，
+       * 那么什么都不会发生、也没有任何回复 —— 静默无效比明确拒绝更糟，
+       * 因为人会以为自己的决定生效了。
+       */
+      const adv = rec?.advisory;
+      setAdvisory(adv ?? null);
+      setMsg({
+        ok: adv?.outcome !== 'cannot-override-facts' && adv?.outcome !== 'no-effect',
+        text: adv?.message ?? '建议书已写入决策日志（append-only 哈希链，不可忽略、不可重新解释）',
+      });
       setText('');
       setConstraints('');
       onDone();
@@ -131,6 +161,25 @@ export function HumanPanel({ state, onDone }: { state: FullState; onDone: () => 
 
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'bad'}`}>{msg.text}</div>}
 
+      {/* 被确定性事实挡住时，把那条事实本身摊开给人看 —— 只说「不行」等于没解释。 */}
+      {advisory?.blockingFacts && advisory.blockingFacts.length > 0 && (
+        <div className="notice bad">
+          <div>
+            挡路的 <b>确定性事实</b>（它们不看任何人的意见，包括你的）：
+          </div>
+          <ul className="list">
+            {advisory.blockingFacts.slice(0, 6).map((f, i) => (
+              <li key={i}>
+                <span className="pill bad">{f.anchorId}</span>
+                <code>{f.code}</code>
+                <span className="muted small">{f.message}</span>
+              </li>
+            ))}
+          </ul>
+          {advisory.alternative && <div className="muted small">{advisory.alternative}</div>}
+        </div>
+      )}
+
       {state.directives.length > 0 && (
         <>
           <h3>已生效的建议书（{state.directives.length}）</h3>
@@ -139,6 +188,9 @@ export function HumanPanel({ state, onDone }: { state: FullState; onDone: () => 
               <li key={d.id}>
                 <span className={`pill ${d.kind === 'hold' ? 'bad' : d.kind === 'resume' ? 'ok' : 'role'}`}>{d.kind}</span>
                 <span>{d.text}</span>
+                {d.advisory && d.advisory.outcome !== 'applied' && (
+                  <span className="muted small">（{d.advisory.outcome === 'cannot-override-facts' ? '未能生效：与确定性事实冲突' : '已收下但不会产生效果'}）</span>
+                )}
               </li>
             ))}
           </ul>

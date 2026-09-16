@@ -228,7 +228,10 @@ export async function createForgeServer(opts: ServerOptions): Promise<ForgeServe
         constraints?: string[];
         targetRefs?: string[];
       };
-      const valid = ['requirement', 'constraint', 'override', 'resume', 'hold'];
+      // 必须与 core 的 DIRECTIVE_KINDS 一致。
+      // 这里以前少了 `let-it-pass`，而界面的介入面板把它列为可用动作 ——
+      // 于是「明知有争议仍要推进」这个动作在界面上有按钮、提交却被 400 拒绝。
+      const valid = ['requirement', 'constraint', 'override', 'resume', 'hold', 'let-it-pass'];
       if (!body.kind || !valid.includes(body.kind)) {
         return json(res, 400, { error: `kind 必须是 ${valid.join(' / ')} 之一` });
       }

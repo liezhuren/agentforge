@@ -508,6 +508,58 @@ test('服务端：真人建议书 —— 写入决策日志并出现在状态里
   });
 });
 
+test('服务端：let-it-pass 必须被接受（界面一直把它列为可用动作）', async () => {
+  // 这是一个**用户能直接撞上**的 bug 的回归测试：
+  // 介入面板上写着「可用动作：resume · override · let-it-pass」，
+  // 而 DIRECTIVE_KINDS 与服务端的合法值校验都没有它 —— 提交必然 400。
+  // 界面推荐了一个 API 会拒绝的动作。
+  await withServer(async (forge, base) => {
+    await postJson(`${base}/api/run`, { mode: 'demo', scenario: 'clean', fresh: true });
+    await forge.manager.wait();
+
+    const ok = await postJson(`${base}/api/directive`, {
+      kind: 'let-it-pass',
+      text: '我知道还有问题，先往下走，记成债',
+    });
+    assert.equal(ok.status, 201, `let-it-pass 必须被接受，实际：${JSON.stringify(ok.body)}`);
+    assert.equal(ok.body.kind, 'let-it-pass');
+    // 必须带上机械裁决说明（人要知道它意味着什么）
+    assert.ok(ok.body.advisory, '必须回一条裁决说明，而不是干巴巴的「已收到」');
+  });
+});
+
+test('服务端：建议书的裁决说明来自真实状态，而不是一句写死的话', async () => {
+  // 「人可以定目标，不能定事实」这条原则必须一路走到 HTTP 响应里 ——
+  // 否则人在界面上做完操作只会看到一句「已写入决策日志」，以为决定生效了。
+  //
+  // 这里只验**管道 + 状态感知**：消息里必须出现真实的阶段名（证明它读了 lastGate），
+  // 而各档 outcome 的完整规则由 `adjudicateDirective` 的纯函数测试穷举覆盖。
+  //
+  // （尝试过在 HTTP 层直接造出「有确定性失败 + 阻断」的终局状态，
+  //   但 demo 场景跑完时最后一个 Gate 已经不再有硬失败了 —— 前提不成立，
+  //   所以那部分验证放在 e2e 测试里，那里能精确控制工件与脚本。）
+  await withServer(async (forge, base) => {
+    await postJson(`${base}/api/run`, { mode: 'demo', scenario: 'hallucination', fresh: true });
+    await forge.manager.wait();
+
+    const res = await postJson(`${base}/api/directive`, { kind: 'override', text: '我批准这个项目通过' });
+    assert.equal(res.status, 201);
+    const adv = res.body.advisory as { outcome: string; message: string } | undefined;
+    assert.ok(adv, '必须回一条裁决说明，而不是干巴巴的「已收到」');
+    assert.match(adv.message, /阶段 [A-Z]+/, `消息必须基于真实的阶段状态，实际：${adv.message}`);
+    assert.ok(
+      ['applied', 'no-effect', 'cannot-override-facts'].includes(adv.outcome),
+      `outcome 必须是三档之一，实际：${adv.outcome}`,
+    );
+
+    // 决策日志里也要留下这条裁决（事后可复查「当时系统是怎么答复人的」）
+    const s = (await getJson(`${base}/api/state`)).body as Record<string, unknown>;
+    const directives = s.directives as Array<{ kind: string; advisory?: { outcome: string } }>;
+    const mine = directives.find((d) => d.kind === 'override');
+    assert.ok(mine?.advisory, '状态投影里必须带上裁决说明');
+  });
+});
+
 test('服务端：并发保护 —— 已有 run 在跑时拒绝新的启动', async () => {
   await withServer(async (forge, base) => {
     const first = await postJson(`${base}/api/run`, { mode: 'demo', scenario: 'clean', fresh: true });

@@ -426,7 +426,14 @@ export const TRIGGER_DESCRIPTIONS: Record<RoundtableTrigger, string> = {
   T1: '主理人本阶段阻断尝试已达上限（打回 3 次以上）',
   T2: '主理人无法将问题归因给具体角色（targetRole = UNRESOLVED）',
   T3: '两个角色对同一契约/实现给出互相矛盾的产出',
-  T4: '执行类锚点连续失败且机械归因指向不同角色（互相甩锅）',
+  /**
+   * T4 的语义改过一次，因为它原来是「归因**分散**」的同义词，
+   * 而「分散」根本不需要开会 —— 派工单天然支持一次派给多个角色。
+   * 实测 12 轮真实运行开了 15 场圆桌，绝大多数是把本可以直接打回的问题拖去开会。
+   * 现在它只表示「**归因完全失灵**」：一条能派出去的工单都生成不了，
+   * 那才是真的无人可派、只能靠协商的处境。
+   */
+  T4: '执行类锚点失败且机械归因完全失灵（没有任何文件可归属，派不出工单）',
   T5: '契约变更请求影响 ≥ 2 个角色且无人认领',
 };
 
@@ -516,12 +523,58 @@ export type RoundtableMinuteDoc = {
 // 真人建议书（docs/05-roundtable-and-directive.md §2）
 // ════════════════════════════════════════════════════════════════
 
-export const DIRECTIVE_KINDS = ['requirement', 'constraint', 'override', 'resume', 'hold'] as const;
+/**
+ * 真人可以发出的指令类型。
+ *
+ * `let-it-pass` 是**冲突解决的一半**（见 docs/05 §2 与 HANDOFF 里的原则）：
+ *
+ *   人可以决定「**要什么**」—— 目标、取舍、愿意承担什么风险。
+ *   人不能决定「**事实是什么**」—— 编译过没过、测试跑没跑、服务起没起。
+ *
+ * 所以 `let-it-pass` 的语义被刻意定为：**照做，但只记为技术债，永远不记为「通过」**。
+ * 人有权承担风险，系统无权替他把风险说成成功。
+ *
+ * 它此前只在界面文案里出现过（介入面板写着「可用动作：… let-it-pass」），
+ * 而 `DIRECTIVE_KINDS` 和 `/api/directive` 的校验都没有它 ——
+ * 也就是说**界面推荐了一个 API 会返回 400 的动作**。
+ */
+export const DIRECTIVE_KINDS = [
+  'requirement',
+  'constraint',
+  'override',
+  'resume',
+  'hold',
+  'let-it-pass',
+] as const;
 export type DirectiveKind = (typeof DIRECTIVE_KINDS)[number];
+
+/**
+ * 对一条建议书的**机械裁决说明**。
+ *
+ * 存在理由：以前人发一条 `override`，它实际只关掉主理人的阻断权；
+ * 如果人的本意是「让它过」，那么**什么都不会发生，而且没有任何回复**。
+ * 静默无效比明确拒绝更糟 —— 人会以为自己的决定生效了。
+ *
+ * 现在每条建议书都会被机械检查一遍，并把结论如实回给人类：
+ *   - `applied`        —— 生效了
+ *   - `no-effect`      —— 收下了，但在当前处境下不会产生任何效果（附原因）
+ *   - `cannot-override-facts` —— 它想推翻的是确定性事实，做不到（附那条事实）
+ */
+export type DirectiveAdvisory = {
+  outcome: 'applied' | 'no-effect' | 'cannot-override-facts';
+  message: string;
+  /** 与人所期望的相冲突的确定性事实（锚点结论）。 */
+  blockingFacts?: Array<{ anchorId: string; code: string; message: string }>;
+  /** 如果人真正想要的是「继续推进」，那条诚实的路是什么。 */
+  alternative?: string;
+};
 
 /**
  * 优先级：USER_DIRECTIVE > FROZEN_CONTRACT > HOST_OBJECTION > ROLE_OPINION
  * 建议书不可被机器人忽略或「重新解释」。
+ *
+ * 注意最后一句的边界：不能被忽略，也不能被曲解成「它想要的样子」。
+ * 一条无法产生效果的建议书必须**明说它没有效果**，而不是假装执行了。
  */
 export type DirectiveRecord = {
   id: ArtifactId;
@@ -533,6 +586,8 @@ export type DirectiveRecord = {
   expiresAtStage?: StageId;
   at: string;
   hash: string;
+  /** 机械裁决说明：这条建议书在当前处境下会／不会产生什么效果。 */
+  advisory?: DirectiveAdvisory;
 };
 
 // ════════════════════════════════════════════════════════════════

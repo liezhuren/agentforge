@@ -8,9 +8,84 @@ import { DecisionLog, silentLogger, type DirectiveRecord } from '../../core/src/
 import { MockProvider } from '../../llm/src/index.ts';
 import { createRoleRunners } from '../../roles/src/index.ts';
 import { SemanticVerifier } from '../../roles/src/verify.ts';
-import { Orchestrator } from '../src/orchestrator.ts';
+import { adjudicateDirective, Orchestrator } from '../src/orchestrator.ts';
 import { applyDirectivesToProfile, compileDirectives, describeEnforcement } from '../src/directives.ts';
 import { DEMO_USER_BRIEF, demoScript, scaffoldDemoProject } from '../src/demo-project.ts';
+
+// ════════════════════════════════════════════════════════════════
+// 建议书的机械裁决：人可以定目标，不能定事实
+// ════════════════════════════════════════════════════════════════
+//
+// 这条原则的落地是两条互补的路：
+//   人可以决定「**要什么**」—— 目标、取舍、愿意承担什么风险（let-it-pass）。
+//   人不能决定「**事实是什么**」—— 编译过没过、测试跑没跑（override/resume 做不到）。
+//
+// 以前人发一条 override，它实际只关掉主理人的阻断权；如果人的本意是「让它过」，
+// 那么什么都不会发生、也没有任何回复 —— **静默无效比明确拒绝更糟**，
+// 因为人会以为自己的决定生效了。这个函数就是那张嘴。
+
+const FACT = { anchorId: 'A5', code: 'tests-failed', message: '测试未全部通过：3 个用例失败' };
+
+test('裁决：被确定性事实挡住时，override 必须明说它做不到，并给出诚实的替代方案', () => {
+  const a = adjudicateDirective({ kind: 'override', stage: 'BUILDING', blocked: true, facts: [FACT] });
+  assert.equal(a.outcome, 'cannot-override-facts');
+  assert.ok(a.message.includes('无法产生你想要的效果'), a.message);
+  assert.ok(a.message.includes('确定性事实'), '必须点明挡住它的是事实而不是意见');
+  assert.deepEqual(a.blockingFacts, [FACT], '要把那条事实摊开给人看，只说「不行」等于没解释');
+  assert.ok(a.alternative?.includes('let-it-pass'), '必须给出真正想要那个结果时该走的路');
+});
+
+test('裁决：resume 与 override 同样管不了确定性事实', () => {
+  const a = adjudicateDirective({ kind: 'resume', stage: 'BUILDING', blocked: true, facts: [FACT] });
+  assert.equal(a.outcome, 'cannot-override-facts');
+  assert.deepEqual(a.blockingFacts, [FACT]);
+});
+
+test('裁决：let-it-pass 被接受，但说清代价是「技术债」而不是「通过」', () => {
+  const a = adjudicateDirective({ kind: 'let-it-pass', stage: 'BUILDING', blocked: true, facts: [FACT] });
+  assert.equal(a.outcome, 'applied', '人有权承担风险 —— 这条指令必须被接受');
+  assert.ok(a.message.includes('技术债'), a.message);
+  assert.ok(a.message.includes('不会是「完整」'), `必须点明交付状态不会被称为完整：${a.message}`);
+  assert.deepEqual(a.blockingFacts, [FACT]);
+});
+
+test('裁决：let-it-pass 是前瞻性指令 —— 现在没卡住 ≠ 它没效果', () => {
+  // 我自己第一版把这种情况写成 outcome='no-effect'，措辞是「不会产生任何效果」——
+  // 那是错的：它说的是「下一次出现争议时别再纠缠」，会一直有效到下一次争议。
+  const a = adjudicateDirective({ kind: 'let-it-pass', stage: 'BUILDING', blocked: false, facts: [] });
+  assert.equal(a.outcome, 'applied');
+  assert.ok(a.message.includes('下一次'), `必须说明它会作用于下一次，实际：${a.message}`);
+});
+
+test('裁决：没有确定性事实时，override/resume 是真的能生效的', () => {
+  // 反向保护：不得滥用「否决人类」—— 人推翻一个**角色或主理人**的决定是正当的，
+  // 只有在与确定性事实冲突时才不成立。
+  const a = adjudicateDirective({ kind: 'override', stage: 'REVIEW', blocked: false, facts: [] });
+  assert.equal(a.outcome, 'applied');
+  assert.equal(a.blockingFacts, undefined);
+});
+
+test('裁决：blocked=true 但没有 fail 级发现时，不得凭空说「与事实冲突」', () => {
+  // blocked 也可能来自「主理人有效异议」这类非确定性原因。
+  // 那时人的 override 是能产生效果的（它本来就是用来推翻主理人的），
+  // 判成「冲突」会错误地剥夺人的权力。
+  const a = adjudicateDirective({ kind: 'override', stage: 'REVIEW', blocked: true, facts: [] });
+  assert.equal(a.outcome, 'applied');
+});
+
+test('裁决：还没跑过 Gate 时如实说明，不编造处境', () => {
+  const a = adjudicateDirective({ kind: 'override', stage: null, blocked: false, facts: [] });
+  assert.equal(a.outcome, 'applied');
+  assert.ok(!a.message.includes('阶段'), `没有阶段就不该提阶段，实际：${a.message}`);
+});
+
+test('裁决：hold 与 requirement/constraint 一律收下（它们不涉及事实之争）', () => {
+  for (const kind of ['hold', 'requirement', 'constraint'] as const) {
+    const a = adjudicateDirective({ kind, stage: 'BUILDING', blocked: true, facts: [FACT] });
+    assert.equal(a.outcome, 'applied', kind);
+    assert.equal(a.blockingFacts, undefined, `${kind} 不该被当成与事实冲突`);
+  }
+});
 
 // ════════════════════════════════════════════════════════════════
 // 单元：建议书 → 机械可校验的约束

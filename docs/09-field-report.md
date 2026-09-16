@@ -1,7 +1,7 @@
 # 09 · 自举验证实地报告（P6）
 
 > 本文件由 `scripts/verify-real-app.ts` 自动生成 —— 数字来自实际运行，不是手写。
-> 生成时间：2026-09-14T16:59:12.842Z
+> 生成时间：2026-09-16T13:27:59.958Z
 
 ## 验证目标
 
@@ -23,7 +23,7 @@
 - 交付状态：`complete`
 - 最终阶段：`DELIVERED`
 - Gate 次数：5
-- 耗时：2600 ms
+- 耗时：2616 ms
 - 工单：0 张；技术债：0 条
 
 ### 阶段轨迹
@@ -42,13 +42,13 @@
 |---|---|---|---|---|
 | A1 | `WARN` | npm-name-rules + typo-distance + local-install + registry | approximate | 6 ms |
 | A2 | `PASS` | none-needed | authoritative | 0 ms |
-| A3 | `PASS` | file-existence with extension candidates (relative to importing file) | authoritative | 4 ms |
-| A4 | `PASS` | structured diagnostics from npm run typecheck | authoritative | 650 ms |
-| A5 | `PASS` | structured counts from npm run test | authoritative | 435 ms |
-| A6 | `PASS` | spawn + HTTP probe http://127.0.0.1:39517/health | authoritative | 336 ms |
-| A7 | `PASS` | openapi-path coverage + generated-types existence + duplication heuristic | authoritative | 3 ms |
+| A3 | `PASS` | file-existence with extension candidates (relative to importing file) | authoritative | 3 ms |
+| A4 | `PASS` | structured diagnostics from npm run typecheck | authoritative | 635 ms |
+| A5 | `PASS` | structured counts from npm run test | authoritative | 443 ms |
+| A6 | `PASS` | spawn + HTTP probe http://127.0.0.1:39517/health | authoritative | 350 ms |
+| A7 | `PASS` | openapi-path coverage + generated-types existence + duplication heuristic | authoritative | 4 ms |
 | B1 | `PASS` | llm-proposals + deterministic evidence verification | approximate | 1 ms |
-| B2 | `PASS` | deterministic coverage matrix (requirement → PRD → task → artifact → test) | authoritative | 1 ms |
+| B2 | `PASS` | deterministic coverage matrix (requirement → PRD → task → artifact → test) | authoritative | 0 ms |
 | B3 | `PASS` | deterministic evidence verification over host objections | authoritative | 0 ms |
 
 ### 主理人问责账本
@@ -99,9 +99,9 @@ exit=0
 > task-board@1.0.0 test
 > node tests/tasks.test.ts
 
-✔ R-001 创建任务：POST /api/tasks 返回 201 且带 id (25.2682ms)
-✔ R-002 列出任务：GET /api/tasks 返回 200 且包含已创建的任务 (6.7043ms)
-✔ 未知路径返回 404 (2.5371ms)
+✔ R-001 创建任务：POST /api/tasks 返回 201 且带 id (25.7587ms)
+✔ R-002 列出任务：GET /api/tasks 返回 200 且包含已创建的任务 (6.6163ms)
+✔ 未知路径返回 404 (2.3472ms)
 ℹ tests 3
 ℹ suites 0
 ℹ pass 3
@@ -109,7 +109,7 @@ exit=0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 37.7851
+ℹ duration_ms 38.2783
 ```
 
 ## 观察到的结论

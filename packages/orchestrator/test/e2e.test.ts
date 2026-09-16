@@ -388,6 +388,151 @@ test('【关键】能归因就打回：一条归不了因，不得把整个阶�
   }
 });
 
+test('端到端：归因分散到多个角色时，先各自派工单返工，而不是开会', async () => {
+  // 这条测试锁的是一个被推翻过的假设。
+  //
+  // 旧判定：`roles.length >= 2 → 开圆桌`，理由是「多个角色都被指到 = 互相甩锅，需要协商」。
+  // 这个理由站不住：**甩锅同样可以同时打回给双方** ——
+  // 派工单的机制本来就支持一次派给多个角色（每个角色一张单）。
+  //
+  // 实测代价：12 轮真实运行开了 15 场圆桌，绝大多数是把本可以直接打回的问题拖去开会。
+  // 圆桌要邀人、要产决议、要校验决议，成本比打回高一到两个数量级。
+  //
+  // 现在：**只要能归因就先返工，一条都归不了因才开会。**
+
+  // backend 与 frontend 各有一个**能归因到自己**的硬失败：
+  //   - backend：导入了一个不存在的具名符号 → A2（符号真实性）
+  //   - frontend：导入了一个不存在的相对路径 → A3（导入可解析）
+  //   两者都会被 `attributeByArtifact` 按「谁声明了这个文件」归到对应角色。
+  //
+  // 注意别用「相对路径里多一个不存在的类型符号」来构造 frontend 的失败：
+  // A2 只管裸模块导入（`from 'pkg'`），相对路径上的具名符号它不检查 ——
+  // 我第一版就是这么写的，结果 frontend 一条硬失败都没产生，测试抓了个空。
+  const badApi = API_CODE.replace(
+    "import { padLeft } from 'leftpad-real';",
+    "import { padLeft, padRigth } from 'leftpad-real';",
+  );
+  const badWeb = WEB_CODE.replace(
+    "import type { Task } from '../../shared/contract/types';",
+    "import type { Task } from './missing-module.ts';\nimport type { Task2 } from '../../shared/contract/types';",
+  );
+
+  const { root, orch, cleanup } = await setup(
+    happyScript({
+      'produce:CodeModule:api': { files: [{ path: 'src/api/routes.ts', content: badApi }] },
+      'produce:CodeModule:web': { files: [{ path: 'src/web/client.ts', content: badWeb }] },
+      'repair:CodeModule:api': { files: [{ path: 'src/api/routes.ts', content: API_CODE }] },
+      'repair:CodeModule:web': { files: [{ path: 'src/web/client.ts', content: WEB_CODE }] },
+    }),
+  );
+  try {
+    const summary = await orch.run();
+
+    const building = summary.traces.find((t) => t.stage === 'BUILDING')!;
+    const actions = building.nextActions;
+
+    // ① 首个动作必须是打回，且**不得**出现圆桌
+    assert.ok(
+      actions[0]?.includes('RETRY_ROLE'),
+      `两个角色都能归因时应当直接返工，实际首个动作：${JSON.stringify(actions)}`,
+    );
+    assert.ok(
+      !actions.some((a) => a.includes('ROUNDTABLE')),
+      `归因分散不构成开会的理由 —— 应当分别派工单。实际动作序列：${JSON.stringify(actions)}`,
+    );
+
+    // ② 必须真的派出了**两张**工单（每个角色一张），而不是只挑一个"主责"打回
+    const toRoles = summary.workOrders.map((o) => o.to);
+    assert.ok(
+      toRoles.includes('backend') && toRoles.includes('frontend'),
+      `backend 与 frontend 都应当收到工单，实际派给：${JSON.stringify(toRoles)}`,
+    );
+
+    // ③ 修好之后应当正常收敛（不该因为一次失败就掉进逃生流程）
+    assert.equal(summary.delivery, 'complete', JSON.stringify(summary.traces, null, 2));
+    assert.equal(summary.finalStage, 'DELIVERED');
+  } finally {
+    await cleanup();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// 真人指令：let-it-pass —— 人可以承担风险，但系统不会把风险说成成功
+// ════════════════════════════════════════════════════════════════
+
+/** 一个修不好的项目：后端交了幻觉符号，而返工交回来的还是同一份坏代码。 */
+const STUCK = happyScript({
+  'produce:CodeModule:api': {
+    files: [{ path: 'src/api/routes.ts', content: API_CODE.replace("import { padLeft }", "import { padRigth, padLeft }") }],
+  },
+  // 返工交回**一模一样**的坏代码 —— 硬失败签名不变，编排层会识别出「修复无效」。
+  'repair:CodeModule:api': {
+    files: [{ path: 'src/api/routes.ts', content: API_CODE.replace("import { padLeft }", "import { padRigth, padLeft }") }],
+  },
+});
+
+test('真人 let-it-pass：第一轮就记为技术债并推进，不再返工', async () => {
+  const { root, provider, orch, cleanup } = await setup(STUCK);
+  try {
+    // 在 run 之前投递 —— 语义是「下一次出现争议时别再纠缠」。
+    const rec = await orch.submitDirective({
+      kind: 'let-it-pass',
+      text: '我知道这个符号问题，先往下走，记成债',
+    });
+    assert.equal(rec.advisory?.outcome, 'applied', '这条指令必须被接受 —— 人有权承担风险');
+
+    const summary = await orch.run();
+    const building = summary.traces.find((t) => t.stage === 'BUILDING')!;
+
+    // ① 第一个被阻断的 Gate 就直接转债，**没有进入返工循环**
+    assert.equal(building.finalAction, 'LET_IT_PASS→with-debt', JSON.stringify(building, null, 2));
+    assert.equal(building.cycles, 1, '指令生效时不该再重试同一个角色');
+    assert.ok(building.blockedReasons.includes('user-let-it-pass'));
+    assert.equal(provider.callCount('repair:CodeModule:api'), 0, '不得再派返工 —— 人已经说了别纠缠');
+
+    // ② 交付状态是「带债」，**绝不是「完整」**
+    assert.equal(summary.delivery, 'with-debt');
+    assert.notEqual(summary.delivery, 'complete', '人可以承担风险，系统不会替他把风险说成成功');
+    assert.ok(summary.debtIds.length >= 1, '必须留下技术债记录');
+
+    // ③ 债务是**可读的**：TECH_DEBT.md 里要写明搁置了什么
+    const debt = await readFile(join(root, 'TECH_DEBT.md'), 'utf8');
+    assert.ok(debt.includes('没有被解决'), debt.slice(0, 300));
+  } finally {
+    await cleanup();
+  }
+});
+
+test('对照组：同一条指令不给时，系统会先努力返工（证明上一个测试的差别来自指令）', async () => {
+  const { root, orch, cleanup } = await setup(STUCK);
+  try {
+    const summary = await orch.run();
+    const building = summary.traces.find((t) => t.stage === 'BUILDING')!;
+    assert.ok(
+      building.finalAction.startsWith('RETRY_ROLE') || building.nextActions.some((a) => a.includes('RETRY_ROLE')),
+      `没有指令时应当先返工，实际：${building.finalAction} / ${JSON.stringify(building.nextActions)}`,
+    );
+    assert.ok(building.cycles > 1, '应当至少尝试过一次返工');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('真人 let-it-pass：用一次就消耗掉，不会把之后的失败也静默转成债', async () => {
+  // 若做成长期开关，之后任何一次不相关的失败都会被转成债 ——
+  // 那会把「带债」这个信号稀释成噪音，而它恰恰是最需要被看见的信号。
+  const { root, orch, cleanup } = await setup(happyScript());
+  try {
+    await orch.submitDirective({ kind: 'let-it-pass', text: '先往下走' });
+    const summary = await orch.run();
+    // 这个项目本来就没问题，指令不该被用掉，更不该产生任何债
+    assert.equal(summary.delivery, 'complete');
+    assert.equal(summary.debtIds.length, 0, '没有失败时不得凭空记债');
+  } finally {
+    await cleanup();
+  }
+});
+
 test('端到端：注入幻觉符号 → A 层硬失败时不唤醒主理人，直接机械派工单', async () => {
   const hallucinated = API_CODE.replace(
     "import { padLeft } from 'leftpad-real';",

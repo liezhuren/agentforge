@@ -21,6 +21,8 @@ import type {
   AnchorRunResult,
   ArtifactId,
   AnchoredReviewDoc,
+  DirectiveAdvisory,
+  DirectiveKind,
   DirectiveRecord,
   Falsifier,
   HostPolicy,
@@ -157,6 +159,93 @@ export function requirementStatusForVerdict(
   return 'unverified';
 }
 
+/**
+ * 对一条建议书做**机械裁决**：它在当前处境下会／不会产生什么效果。
+ *
+ * 这个函数本身就是「人可以定目标、不能定事实」那条原则的执行点：
+ *
+ *   - 人**可以**决定继续推进（`let-it-pass`）—— 系统照做，但只记技术债。
+ *   - 人**不能**让一个编译不过、测试挂掉的项目「通过」——
+ *     那不是意见分歧，是可被机械证伪的假话。
+ *
+ * 为什么必须把结论回给人类：以前人发一条 `override`，它实际只关掉主理人的阻断权。
+ * 如果人的本意是「让它过」，那么**什么都不会发生，也没有任何回复**。
+ * 静默无效比明确拒绝更糟 —— 人会以为自己的决定生效了。
+ *
+ * 抽成纯函数（与 `requirementStatusForVerdict`、服务端的 `deriveVerdict` 同一套做法），
+ * 是为了能脱离编排器直接穷举各个组合 —— 判定逻辑不该只有跑完一整轮才能验。
+ */
+export function adjudicateDirective(args: {
+  kind: DirectiveKind;
+  /** 最近一次 Gate 所在的阶段；null 表示还没跑过 Gate。 */
+  stage: StageId | null;
+  /** 最近一次 Gate 是否被阻断。 */
+  blocked: boolean;
+  /** 当前未解决的确定性失败。 */
+  facts: Array<{ anchorId: string; code: string; message: string }>;
+}): DirectiveAdvisory {
+  const { kind, facts } = args;
+  const where = args.stage ? `阶段 ${args.stage}` : '当前';
+  const blockedNow = args.blocked && facts.length > 0;
+
+  if (kind === 'let-it-pass') {
+    /**
+     * 注意这条指令是**前瞻性**的：它说的是「下一次出现争议时别再纠缠」。
+     * 所以「现在没卡住」不等于「它不会产生效果」—— 那个措辞是错的
+     * （我自己第一版就是这么写的）。正确的说法是「它会作用于下一次」。
+     */
+    if (!blockedNow) {
+      return {
+        outcome: 'applied',
+        message:
+          `${where}现在没有未解决的确定性失败，所以这条指令暂时无事可做。` +
+          `它会**一直有效到下一次争议** —— 那时未解决的问题会被记为技术债，然后继续推进。`,
+      };
+    }
+    return {
+      outcome: 'applied',
+      message:
+        `已**照做**：${where}的 ${facts.length} 条未解决失败会被记为**技术债**，然后继续推进。` +
+        `交付状态**不会是「完整」**（而是「带债」）—— 你有权承担风险，` +
+        `系统不会替你把风险说成成功。想真正修好请改用具体工单让角色返工。`,
+      blockingFacts: facts,
+    };
+  }
+
+  if (kind === 'override' || kind === 'resume') {
+    if (!blockedNow) {
+      return {
+        outcome: 'applied',
+        message: `${where}没有确定性失败，这条指令已生效（解除主理人的阻断权，流水线可继续推进）。`,
+      };
+    }
+    return {
+      outcome: 'cannot-override-facts',
+      message:
+        `这条指令**无法产生你想要的效果**：它只能解除**主理人**的阻断权，` +
+        `而${where}卡住的是 ${facts.length} 条**确定性事实**（见下）——` +
+        `那些检查不看任何人的意见，包括你的。`,
+      blockingFacts: facts,
+      alternative:
+        '要「别再纠缠、继续往下走」：用 let-it-pass（记为技术债，交付状态是「带债」而不是「完整」）。' +
+        '要「把它修好」：把问题派给具体角色返工。',
+    };
+  }
+
+  if (kind === 'hold') {
+    return { outcome: 'applied', message: '已收下：编排器会在下一个阶段边界停下（不会强杀，避免半写状态）。' };
+  }
+
+  return {
+    outcome: 'applied',
+    message: `${where}已收到这条建议书。${
+      kind === 'constraint' || kind === 'requirement'
+        ? '它是否被编译成机械可校验的规则，见下方的执行情况。'
+        : ''
+    }`,
+  };
+}
+
 export class Orchestrator {
   private o: OrchestratorOptions;
   private store: ArtifactStore;
@@ -217,6 +306,31 @@ export class Orchestrator {
   private contract: ProjectContract = { pkgExists: false, pkgKeys: {}, protectedFiles: {} };
   /** 产出对契约的篡改尝试。已全部按「保留原值」处理，但必须报出来（A8）。 */
   private contractViolations: ContractViolation[] = [];
+  /**
+   * 最近一次 Gate 的结论摘要。
+   *
+   * 真人建议书可以随时投递，而系统必须能如实回答「它现在会产生什么效果」。
+   * 那需要知道**现在卡在哪**（哪个阶段、哪些锚点硬失败）—— 这就是它的用途。
+   */
+  private lastGate: { stage: StageId; blocked: boolean; anchors: AnchorRunResult[] } | null = null;
+  /**
+   * 真人已下达「明知有争议，继续推进」。**用一次就消耗掉**。
+   *
+   * 不做成长期开关的理由：那会把之后任何一次不相关的失败都静默转成技术债，
+   * 而「带债」恰恰是最需要被看见的信号。
+   */
+  private letItPassPending = false;
+  /**
+   * 已被真人接受为技术债的**硬失败签名**。
+   *
+   * 为什么需要它：`let-it-pass` 只在**被消耗的那一刻**起作用，
+   * 而同一批失败在下一个阶段（REVIEW）会被重新检出 ——
+   * 于是系统又开始派工单返工，与人刚刚说的「别再纠缠」直接矛盾。
+   *
+   * 记签名而不是记「已批准」这个布尔量，正是为了不稀释信号：
+   * **只有这一批具体的失败**不再重打，之后出现任何**新的**问题照常处理。
+   */
+  private acceptedDebtSignatures = new Set<string>();
 
   constructor(opts: OrchestratorOptions) {
     this.o = opts;
@@ -464,7 +578,76 @@ export class Orchestrator {
         // 把 B1 的逐条判定回写成需求验收状态。
         await this.syncRequirementStatuses(gateOut.anchors);
 
+        /**
+         * 记住本轮的 Gate 结论。
+         *
+         * 用途：真人随时可能投递建议书，而系统必须能回答
+         * 「这条建议书在当前处境下会／不会产生效果」——
+         * 那需要知道**现在到底卡在哪**（哪些锚点硬失败、卡在哪个阶段）。
+         * 没有它就只能给一个人畜无害的「已收到」，那等于静默无效。
+         */
+        this.lastGate = { stage, blocked: gateOut.blocked, anchors: gateOut.anchors };
+
         const action = gateOut.nextAction;
+
+        /**
+         * ── 真人说「明知有争议，继续推进」──────────────────────────
+         *
+         * 语义被刻意定成「**照做，但只记为技术债，永远不记为通过**」。
+         *
+         * 这就是「人可以定目标、不能定事实」那条原则的落点：
+         * 人有权承担风险继续走，系统无权替他把风险说成成功 ——
+         * 于是交付状态只会是 `with-debt`，TECH_DEBT.md 里会写明哪些问题被搁置。
+         *
+         * 「用一次就消耗掉」也是刻意的：这条指令针对的是**当前这场争议**。
+         * 若做成长期有效的开关，之后任何一次不相关的失败都会被静默转成债 ——
+         * 那会把「带债」这个信号稀释成噪音，而它恰恰是最需要被看见的信号。
+         */
+        const sig = gateOut.hardFailureSignature;
+        const blockedish = action.kind !== 'ADVANCE' && action.kind !== 'HOLD';
+        const alreadyAccepted = blockedish && sig !== null && this.acceptedDebtSignatures.has(sig);
+        const justAccepted = !alreadyAccepted && blockedish && this.consumeLetItPass();
+        if (justAccepted && sig !== null) this.acceptedDebtSignatures.add(sig);
+
+        if (alreadyAccepted || justAccepted) {
+          /**
+           * 两条路殊途同归，都进债，但**理由不同**，必须分开写：
+           *   - justAccepted：刚刚收到人的指令
+           *   - alreadyAccepted：这批失败人**已经**接受过了，不该在下一个阶段又被重打一遍
+           *
+           * 后者是实测补上的：只做「用一次就消耗」时，BUILDING 里接受掉的失败
+           * 会在 REVIEW 被重新检出 → 系统又开始派工单返工 →
+           * 与人刚说的「别再纠缠」直接矛盾，而且白花钱。
+           */
+          const facts = gateOut.anchors
+            .flatMap((a) => a.findings.map((f) => ({ anchorId: a.anchorId, f })))
+            .filter((x) => x.f.severity === 'fail');
+          trace.finalAction = justAccepted ? 'LET_IT_PASS→with-debt' : 'ACCEPTED_DEBT→with-debt';
+          trace.blockedReasons.push('user-let-it-pass');
+          const outcome = await passWithDebt(this.store, this.log ?? (await this.dummyLog()), {
+            stage,
+            summary:
+              `真人已接受这批失败为技术债（${facts.length} 条），${justAccepted ? '本次指令' : '同一批失败在此前阶段已被接受'}：` +
+              facts
+                .slice(0, 5)
+                .map((x) => `${x.anchorId}/${x.f.code}${x.f.file ? `@${x.f.file}` : ''}`)
+                .join('；'),
+            objections: gateOut.objections,
+            arbitration: gateOut.arbitration,
+            requirementIds: this.requirementIds(),
+            reason: 'user-let-it-pass',
+          });
+          this.debtIds.push(outcome.debt.id);
+          this.debtRequirements.push(...outcome.markedRequirements);
+          this.bus.emit({ t: 'debt.recorded', debtId: outcome.debt.id, requirementIds: outcome.markedRequirements });
+          this.logger.warn(
+            `真人已接受的失败集记为技术债（含本阶段 ${facts.length} 条）—— 交付状态是「带债」而不是「通过」`,
+          );
+          delivery = 'with-debt';
+          this.ledger.endStage({ aLayerHealthy: false });
+          stage = nextStageOf(stage);
+          break;
+        }
 
         if (action.kind === 'HOLD') {
           trace.finalAction = 'HOLD';
@@ -1538,10 +1721,24 @@ export class Orchestrator {
 
     if (doc.kind === 'resume') this.ledger.humanResume();
     if (doc.kind === 'override') this.ledger.humanForceAdvance();
+    if (doc.kind === 'let-it-pass') this.letItPassPending = true;
+
+    /**
+     * 机械裁决：这条建议书在当前处境下到底会不会产生效果。
+     *
+     * 必须在**副作用之后**算 —— 它回答的是「我刚才那条指令现在意味着什么」，
+     * 而不是「如果不考虑我刚做的事会怎样」。
+     */
+    const advisory = this.adjudicate(record);
+    record.advisory = advisory;
+    if (advisory.outcome !== 'applied') {
+      this.logger.warn(`建议书 ${record.id}（${record.kind}）：${advisory.message}`);
+    }
 
     this.bus.emit({ t: 'directive.received', directive: record });
     await this.log?.append('directive.received', {
       ...record,
+      advisory,
       enforcement: {
         enforced: this.enforcement.enforced.filter((e) => e.directiveId === record.id),
         advisory: this.enforcement.advisory.filter((a) => a.directiveId === record.id),
@@ -1564,6 +1761,33 @@ export class Orchestrator {
   /** 本次 run 的建议书执行情况（哪些真的生效、哪些只是指令）。 */
   get directiveEnforcement(): DirectiveEnforcementReport | null {
     return this.enforcement;
+  }
+
+  /** 取走「继续推进」指令（用一次即消耗）。 */
+  private consumeLetItPass(): boolean {
+    if (!this.letItPassPending) return false;
+    this.letItPassPending = false;
+    return true;
+  }
+
+  /**
+   * 对一条建议书做机械裁决（收集「现在卡在哪」的事实，交给纯函数判定）。
+   *
+   * 判定规则本身在 `adjudicateDirective` —— 它是导出的纯函数，可脱离编排器穷举测试。
+   * 这里只负责把「当前处境」翻译成它的输入。
+   */
+  private adjudicate(doc: { kind: DirectiveKind }): DirectiveAdvisory {
+    const facts = (this.lastGate?.anchors ?? [])
+      .flatMap((a) => a.findings.map((f) => ({ anchorId: a.anchorId as string, f })))
+      .filter((x) => x.f.severity === 'fail')
+      .map((x) => ({ anchorId: x.anchorId, code: x.f.code, message: x.f.message }));
+
+    return adjudicateDirective({
+      kind: doc.kind,
+      stage: this.lastGate?.stage ?? null,
+      blocked: this.lastGate?.blocked ?? false,
+      facts,
+    });
   }
 
   get ledgerRef(): HostLedger {

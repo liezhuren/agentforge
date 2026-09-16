@@ -212,7 +212,18 @@ export type FullState = {
     falsifiersRun?: number;
     discardedStatements?: number;
   }>;
-  directives: Array<{ id: string; kind: string; text: string; constraints?: string[]; at: string }>;
+  directives: Array<{
+    id: string;
+    kind: string;
+    text: string;
+    constraints?: string[];
+    at: string;
+    /** 机械裁决说明：这条建议书在当前处境下会不会产生效果。 */
+    advisory?: {
+      outcome: 'applied' | 'no-effect' | 'cannot-override-facts';
+      message: string;
+    };
+  }>;
   escalations: Array<{ bundleId: string }>;
   debts: Array<{ debtId: string; requirementIds: string[] }>;
   recentEvents: ForgeEvent[];
@@ -275,7 +286,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   start: (req: Record<string, unknown>) => post<{ accepted: boolean }>('/api/run', req),
-  directive: (req: Record<string, unknown>) => post<{ id: string }>('/api/directive', req),
+  directive: (req: Record<string, unknown>) =>
+    post<{
+      id: string;
+      kind: string;
+      text: string;
+      /** 服务端的机械裁决：这条建议书在当前处境下会不会产生效果。 */
+      advisory?: {
+        outcome: 'applied' | 'no-effect' | 'cannot-override-facts';
+        message: string;
+        blockingFacts?: Array<{ anchorId: string; code: string; message: string }>;
+        alternative?: string;
+      };
+    }>('/api/directive', req),
   pause: (reason: string) => post<{ id: string }>('/api/pause', { reason }),
   artifact: async (id: string) => {
     const res = await fetch(`/api/artifacts/${encodeURIComponent(id)}`);
