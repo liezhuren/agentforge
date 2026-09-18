@@ -73,7 +73,12 @@ export function purposeFor(action: 'produce' | 'repair' | 'roundtable', kind?: A
  * 约定必须来自 profile，而不是在提示词里写死一条通用建议：
  * 不同项目约定不同，写死会让 AgentForge 只能生成跟它自己一模一样的项目。
  */
-function renderConventions(ctx: RoleContext): string {
+/**
+ * 导出是为了**可测**：经验注入的角色白名单（只有 frontend/backend/test 收经验）
+ * 必须有一条能真的失败的测试守着。不导出的话它就只是一个私有实现细节，
+ * 改错了没有任何东西会报警 —— 而「没人检查的规则就只是措辞」是这个项目反复吃过的亏（§6.9）。
+ */
+export function renderConventions(ctx: RoleContext, role: RoleId): string {
   const lines: string[] = [];
 
   lines.push(`语言：TypeScript；源码目录：${ctx.profile.srcDir}；tsconfig：${ctx.profile.tsconfigPath}`);
@@ -92,6 +97,31 @@ function renderConventions(ctx: RoleContext): string {
   // 项目声明的环境约束 —— 由**项目**决定，而不是引擎硬编码（见 ProjectProfile.environmentNotes）
   for (const note of ctx.profile.environmentNotes ?? []) {
     lines.push(note);
+  }
+
+  /**
+   * 记忆系统供给的经验 —— 与 `environmentNotes` **同一个通道**，但必须与它可区分。
+   *
+   * 为什么同一个通道：`docs/HANDOFF.md §8.0-mem` 已经定过关系 ——
+   * `environmentNotes` 本来就是「项目声明的约定，引擎原样注入」，
+   * 记忆系统是它的**自动供给**，不该另起一套机制。
+   *
+   * 为什么必须可区分（三点，都不是形式主义）：
+   * 1. **来源不同**：`environmentNotes` 是人写的、持久的；经验是机器归纳的、会失效、会被反证。
+   * 2. **谁收到不同**：只有写代码/写测试的角色收到经验。PM 的产出就是判定基准
+   *    （Requirement / Contract），主理人是对抗审查方 —— 两者收到经验改变的是**判定性质**，
+   *    不只是产出。这是 A8 那条边界（被验证者不得改验证基准）在提示词层面的延伸。
+   * 3. 语义验证器以 `test` 身份运行，但它是 `SemanticVerifier` 这个**另一个类**，
+   *    构造上下文走 `buildVerifierContext`，**不引用 memoryNotes** ——
+   *    这条由 `packages/memory/test/memory-boundary.test.ts` 扫真实上下文来守，不靠这段注释。
+   */
+  const memoryRoles: RoleId[] = ['frontend', 'backend', 'test'];
+  if (memoryRoles.includes(role) && (ctx.memoryNotes?.length ?? 0) > 0) {
+    lines.push(
+      '【以下来自本项目历次真实运行总结的经验 —— 与上面「项目约定」不同，' +
+        '这些是**系统自己归纳的**，可能不适用于其它项目】',
+    );
+    for (const note of ctx.memoryNotes!) lines.push(note);
   }
 
   if (ctx.profile.typecheck) {
@@ -297,7 +327,7 @@ export class LlmRoleRunner implements RoleRunner {
 
     parts.push(`【当前阶段】${ctx.stage}`);
     parts.push(`【用户的原始诉求】\n${ctx.userBrief}`);
-    parts.push(renderConventions(ctx));
+    parts.push(renderConventions(ctx, this.role));
 
     if (ctx.directives.length > 0) {
       parts.push(

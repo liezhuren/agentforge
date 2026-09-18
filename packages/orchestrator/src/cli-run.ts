@@ -20,7 +20,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { DecisionLog, Logger, readJsonOrNull, type ProjectProfile } from '../../core/src/index.ts';
+import { DecisionLog, EventBus, Logger, readJsonOrNull, type ProjectProfile } from '../../core/src/index.ts';
 import {
   CONFIG_FILENAME,
   ReplayProvider,
@@ -31,6 +31,18 @@ import {
   writeTemplateConfig,
   type ForgeConfig,
 } from '../../llm/src/index.ts';
+import {
+  MEMORY_DB_RELATIVE_PATH,
+  MemoryRecorder,
+  buildMemoryInjection,
+  computeEnvFingerprint,
+  efficacyOf,
+  listLessons,
+  openMemoryDb,
+  summarizeAndPropose,
+  workspaceKeyOf,
+  type MemoryDb,
+} from '../../memory/src/index.ts';
 import { createBoundRoleRunners } from '../../roles/src/index.ts';
 import { SemanticVerifier } from '../../roles/src/verify.ts';
 import { Orchestrator } from './orchestrator.ts';
@@ -200,6 +212,44 @@ export async function runCli(io: CliIO): Promise<number> {
   const { profile, notes } = await deriveProfile(workspace, projectName);
   for (const n of notes) out(`  ${C.yellow}注意：${n}${C.reset}`);
 
+  // ── 记忆系统（三层） ────────────────────────────────────────
+  //
+  // 接线刻意全部放在**这里**（CLI / 接线层），而不是编排器里：
+  // 编排器只接受一个 `memoryNotesFor` 回调，自己不 import 记忆包。
+  // 于是「经验库不进判定路径」是一条 import 图上的确定事实，
+  // 而不是一句需要有人记得的纪律（由 packages/memory/test/memory-boundary.test.ts 守）。
+  //
+  // 关掉的方式：`--no-memory`。关掉之后行为与「加记忆之前」逐字节相同。
+  const useMemory = !has('no-memory');
+  let mem: MemoryDb | null = null;
+  let recorder: MemoryRecorder | null = null;
+  let bus: EventBus | null = null;
+  let envHash = '';
+  let envParts: Record<string, string> = {};
+  const memoryLog: string[] = [];
+
+  if (useMemory) {
+    try {
+      const key = workspaceKeyOf(workspace);
+      mem = openMemoryDb(join(workspace, MEMORY_DB_RELATIVE_PATH), key);
+      bus = new EventBus();
+      recorder = new MemoryRecorder(mem);
+      recorder.attach(bus);
+
+      // 环境指纹：经验的**失效机制**。指纹变了的经验不会进提示词（见 packages/memory/src/env.ts）。
+      const fp = await computeEnvFingerprint({ workspace, profile });
+      envHash = fp.envHash;
+      envParts = fp.parts;
+      out(`${C.dim}记忆库：${join(workspace, MEMORY_DB_RELATIVE_PATH)}（环境指纹 ${envHash.slice(0, 12)}…）${C.reset}`);
+    } catch (e) {
+      // 记忆不可用不是致命问题 —— 它只是一层帮助。但**必须说出来**，不能静默降级。
+      out(`  ${C.yellow}记忆系统不可用，本次按「无记忆」继续：${(e as Error).message}${C.reset}`);
+      mem = null;
+      recorder = null;
+      bus = null;
+    }
+  }
+
   const brief =
     get('brief') ?? '做一个任务看板：用户可以创建任务、列出全部任务，并支持按状态筛选。';
 
@@ -213,6 +263,30 @@ export async function runCli(io: CliIO): Promise<number> {
     humanAvailable: false,
     offline: true, // 无外网：A1 的远端核实会报 WARN 而不是伪造 PASS
     log: new DecisionLog(workspace),
+    // 传入我们自己的总线，好让记忆记录器当**纯投影**订阅它。
+    // 不传的话编排器会自建一个，记忆就只能靠事后扫描磁盘 —— 而磁盘上的历史是残缺的
+    // （中间轮次的锚点结论被覆盖过，见 docs/07 §L14）。
+    ...(bus ? { bus } : {}),
+    // 经验供给。PM 与主理人会返回空（白名单在记忆包里，有测试守）。
+    ...(mem
+      ? {
+          memoryNotesFor: (role, stage) => {
+            const inj = buildMemoryInjection(mem!, {
+              role,
+              currentEnvHash: envHash,
+              runId,
+            });
+            for (const x of inj.expired) {
+              memoryLog.push(`经验 ${x.lessonId} 因环境指纹变化被降级为 stale（本次不注入）`);
+            }
+            for (const r of inj.rejected) memoryLog.push(`经验未注入：${r.reason}`);
+            if (inj.count > 0) {
+              memoryLog.push(`[${stage}] 向 ${role} 注入 ${inj.count} 条经验：${inj.lessonIds.join('、')}`);
+            }
+            return { notes: inj.block ? [inj.block] : [], lessonIds: inj.lessonIds };
+          },
+        }
+      : {}),
     // profile 必须在代码落盘后重新推导一次。
     //
     // 启动时工作区是空的，所以 deriveProfile 会得出 typecheck=null / test=null，
@@ -313,6 +387,86 @@ export async function runCli(io: CliIO): Promise<number> {
     out(`  ${C.yellow}带债需求：${summary.techDebtRequirements.join(', ')}${C.reset}  ${C.dim}见 TECH_DEBT.md${C.reset}`);
   }
   out('');
+
+  // ── 记忆系统的收尾与报告 ────────────────────────────────────
+  if (mem && recorder) {
+    try {
+      // 记录器是**纯投影**，事件流里没有的东西（修复策略）在这里补。
+      const rs = await recorder.finalize(workspace);
+      out(`${C.bold}${C.blue}${'═'.repeat(70)}${C.reset}`);
+      out(`${C.bold}${C.blue}  记忆系统（L1 事实 / L2 索引 / L3 经验）${C.reset}`);
+      out(`${C.bold}${C.blue}${'═'.repeat(70)}${C.reset}`);
+      out('');
+      out(
+        `  L1 运行中记录：${rs.anchorResults} 次锚点结论 → ${rs.findings} 条发现` +
+          `（其中 ${rs.eligibleFindings} 条可进记忆，${rs.textBasedFindings} 条依据是文本模式）`,
+      );
+      if (rs.unassignedFindings > 0) {
+        out(
+          `  ${C.yellow}⚠️ ${rs.unassignedFindings} 条发现没能归属到某个 Gate${C.reset}` +
+            `（run 被中断时会出现；留空而不是猜）`,
+        );
+      }
+
+      // L3：聚类 → 提议。**默认不自动提升** —— 生效是一条经验影响后续所有轮次的开始，
+      // 这个决定不该由系统自己做（`--promote-lessons` 才开）。
+      const l3 = await summarizeAndPropose(mem, {
+        currentEnvHash: envHash,
+        envParts,
+        // 策略：有确定性措辞的类直接落 proposed（0 成本）；
+        // 其余类需要模型措辞 —— 默认**不在 run 结束时再花钱**，留给专门的一次调用。
+        readyOnly: true,
+      });
+      out(
+        `  L3 经验：${l3.clusters} 个够条件的候选簇 → 提出 ${l3.proposed} 条 proposed` +
+          `（其中 ${l3.usedLlm} 条由模型措辞）`,
+      );
+
+      const active = listLessons(mem, { status: 'active' }).length;
+      const stale = listLessons(mem, { status: 'stale' }).length;
+      const refuted = listLessons(mem, { status: 'refuted' }).length;
+      const proposed = listLessons(mem, { status: 'proposed' }).length;
+      out(`  经验库：proposed ${proposed} / active ${active} / stale ${stale} / refuted ${refuted}`);
+
+      // 有效性：**保守措辞**。没有对照实验，能说的只有「尚无反证」。
+      if (active > 0) {
+        out('');
+        out('  生效经验的有效性（「这条记忆有没有用」）：');
+        for (const l of listLessons(mem, { status: 'active' })) {
+          const eff = efficacyOf(mem, l.lessonId);
+          const tag =
+            eff?.verdict === 'counter-evidence'
+              ? `${C.red}出现反证${C.reset}`
+              : eff?.verdict === 'no-counter-evidence'
+                ? `${C.green}尚无反证${C.reset}`
+                : `${C.dim}无观测${C.reset}`;
+          out(`    · [${tag}] ${l.text.slice(0, 60)}…`);
+          out(`      ${C.dim}注入 ${eff?.injectedCount ?? 0} 次，暴露 ${eff?.exposures ?? 0} 轮，反证 ${eff?.refutedCount ?? 0} 次${C.reset}`);
+        }
+      } else {
+        out(
+          `  ${C.dim}尚无生效经验 —— 因此有效性没有任何观测（不是「有效」，是「还没测」）。${C.reset}`,
+        );
+      }
+
+      if (memoryLog.length > 0) {
+        out('');
+        out(`  ${C.dim}记忆事件：${C.reset}`);
+        for (const l of memoryLog.slice(0, 10)) out(`    ${C.dim}${l}${C.reset}`);
+        if (memoryLog.length > 10) out(`    ${C.dim}…共 ${memoryLog.length} 条${C.reset}`);
+      }
+      out('');
+      out(
+        `  ${C.dim}查看详情：node scripts/memory-report.ts --db ${join(workspace, MEMORY_DB_RELATIVE_PATH)}${C.reset}`,
+      );
+      out('');
+      mem.close();
+    } catch (e) {
+      // 记忆收尾失败不能让整次 run 看起来失败 —— 但必须说出来。
+      err(`${C.yellow}记忆系统收尾失败（run 本身不受影响）：${(e as Error).message}${C.reset}`);
+    }
+  }
+
   return 0;
 }
 

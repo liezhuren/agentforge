@@ -104,6 +104,22 @@ export type OrchestratorOptions = {
    * 返回 null 表示维持现状（例如还没生成 package.json）。
    */
   refreshProfile?: (base: ProjectProfile) => Promise<{ profile: ProjectProfile; notes?: string[] } | null>;
+  /**
+   * 记忆系统供给经验：给定角色与阶段，返回该角色本次应收到哪些经验文本。
+   *
+   * **为什么是一个回调，而不是让编排器 import 记忆包**：
+   * 记忆系统有一条不可逾越的边界 —— **经验库不进判定路径**
+   * （锚点、机械裁判、Gate、语义验证器永不读它）。一旦编排器 `import` 了记忆包，
+   * 那条边界就只剩「记得别用」这种纪律，而纪律在这个项目里已经被证明靠不住
+   * （§6.9：一个看起来在检查的清单，如果没被检查，它就只是措辞）。
+   *
+   * 做成回调之后，**依赖方向是反向的**（接线方 → 编排器，而不是编排器 → 记忆），
+   * 于是「编排器里有没有用到经验」变成一句可被 import 图检查的确定性事实。
+   * `packages/memory/test/memory-boundary.test.ts` 就在查这件事。
+   *
+   * 省略该回调 = 完全没有记忆，行为与加记忆之前逐字节相同。
+   */
+  memoryNotesFor?: (role: RoleId, stage: StageId) => { notes: string[]; lessonIds: string[] };
 };
 
 export type StageTrace = {
@@ -1673,7 +1689,16 @@ export class Orchestrator {
   }
 
   private roleContext(role: RoleId): RoleContext {
-    void role;
+    // 记忆供给：由**外部**回调决定（编排器自己不 import 记忆包，见 OrchestratorOptions.memoryNotesFor）。
+    // 回调抛异常不能让 run 崩 —— 没有经验只是少一层帮助，不是失败。
+    let mem: { notes: string[]; lessonIds: string[] } = { notes: [], lessonIds: [] };
+    if (this.o.memoryNotesFor) {
+      try {
+        mem = this.o.memoryNotesFor(role, this.ledger.stage);
+      } catch (err) {
+        this.logger.warn(`取记忆经验失败，本阶段按「无经验」继续：${(err as Error).message}`);
+      }
+    }
     return {
       stage: this.ledger.stage,
       store: this.store,
@@ -1688,6 +1713,8 @@ export class Orchestrator {
         text: d.text,
         ...(d.constraints ? { constraints: d.constraints } : {}),
       })),
+      ...(mem.notes.length > 0 ? { memoryNotes: mem.notes } : {}),
+      ...(mem.lessonIds.length > 0 ? { memoryLessonIds: mem.lessonIds } : {}),
     };
   }
 

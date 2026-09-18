@@ -64,6 +64,22 @@ export type RoleContext = {
   userBrief: string;
   /** 已激活的真人建议书（优先级最高）。 */
   directives: Array<{ kind: string; text: string; constraints?: string[] }>;
+  /**
+   * 记忆系统供给的经验（已生效、已过环境指纹核验、出处完整的那些）。
+   *
+   * ⚠️ **只有写代码/写测试的角色会渲染它**（见 `runner.ts` 的 `renderConventions`）。
+   *
+   * 而且——这是刻意的——**语义验证器读不到它**：
+   * `SemanticVerifier` 是另一个类，它构造上下文走 `buildVerifierContext`，
+   * 那条路径不引用本字段。存在的理由：经验是「告诉生成方该怎么做」的，
+   * 一旦它进了验证方的上下文，LLM 写的文字就间接参与了「什么算通过」，
+   * 那正是 A8 守的边界（被验证者不得改验证基准）绕个弯被破掉。
+   * 这条边界由 `packages/memory/test/memory-boundary.test.ts` 扫真实上下文来守，
+   * 不靠这段注释。
+   */
+  memoryNotes?: string[];
+  /** 注入的经验 id。用于事后回答「这条经验有没有用」。 */
+  memoryLessonIds?: string[];
 };
 
 export type ProduceRequest = {
