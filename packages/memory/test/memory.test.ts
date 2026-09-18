@@ -354,6 +354,38 @@ test('分类器：把「引擎/人类产出的工件」当成任务交付物 →
   }
 });
 
+test('分类器：编译错误里出现 Record<string,unknown> → 识别为**引擎降级**，而不是角色的代码问题', () => {
+  // 第 13 轮真实运行的错误原文
+  const c = classifyFinding('A4', {
+    code: 'compile-error',
+    severity: 'fail',
+    message: "src/book-store.ts:81:7 TS2322: Type 'string' is not assignable to type 'Record<string, unknown>'.",
+    file: 'src/book-store.ts',
+    data: { tsCode: 'TS2322' },
+  });
+  assert.equal(c.cls, 'contract:codegen-degraded-types');
+  assert.equal(c.ruleId, 'A4.degraded-contract-types');
+  assert.equal(c.textBased, true);
+
+  // 🔴 关键：这一类**不进记忆**。
+  // 它不是「告诉角色该怎么做」的约定（角色改不动冻结契约生成的类型），
+  // 而是「引擎自己坏了」的信号 —— 把它当经验注入提示词只会让角色去将就坏契约。
+  assert.equal(
+    c.eligible,
+    false,
+    '引擎缺陷信号不得进记忆：那样等于教角色去适应坏契约，而不是让引擎去修',
+  );
+
+  // 而不含该标记的普通类型错误仍然是代码类
+  const plain = classifyFinding('A4', {
+    code: 'compile-error',
+    severity: 'fail',
+    message: "src/x.ts:1:1 TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.",
+    data: { tsCode: 'TS2345' },
+  });
+  assert.equal(plain.cls, 'code:type-error');
+});
+
 test('分类器：相同输入永远得到相同结论（确定性）', () => {
   const f: AnchorFinding = { code: 'compile-error', severity: 'fail', message: 'm', data: { tsCode: 'TS2835' } };
   const a = classifyFinding('A4', f);

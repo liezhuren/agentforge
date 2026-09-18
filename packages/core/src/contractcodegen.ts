@@ -22,10 +22,75 @@ import { normalizeRelPath } from './projectcontract.ts';
 
 type JsonSchema = Record<string, unknown>;
 
+/**
+ * 生成上下文：**能解析 `$ref` 需要知道「有哪些具名定义」**。
+ *
+ * 这个参数是补一个真实缺陷时加的（见下面 `$ref` 分支的注释）：
+ * 原来的 `schemaToTs(schema)` 只有两个参数，根本**没有地方**放「定义表」，
+ * 所以 `$ref` 从设计上就不可能被解析 —— 这类缺陷不是「忘了写一个分支」，
+ * 而是签名里就缺了必要的信息。
+ */
+export type CodegenCtx = { knownNames: ReadonlySet<string> };
+
+/**
+ * 把 `#/$defs/Name` / `#/definitions/Name` 解析成**生成文件里的类型名**。
+ *
+ * 为什么可以直接返回名字：`generateContractTypes()` 会把 `contract.jsonSchemas`
+ * 的每个 key 都emit 成一个具名类型（`interface X` / `type X`），
+ * 所以同一个文件里按名字引用即可。
+ *
+ * ⚠️ **已知局限**：只在 schema **自己内嵌** `$defs` 的情况下返回 null（→ 退化成 `unknown`），
+ * 因为那些定义不会被 emit 成具名类型。本项目的契约把定义平铺在 `jsonSchemas` 里，
+ * 所以这条路径不会走到；但换一种契约写法就会 —— 那时**必须是响亮的失败，而不是静默降级**。
+ */
+export function resolveRefName(ref: string, ctx: CodegenCtx): string | null {
+  const m = /^#\/(?:\$defs|definitions)\/([^/]+)$/.exec(ref);
+  if (!m) return null;
+  const name = m[1]!;
+  return ctx.knownNames.has(name) ? name : null;
+}
+
 /** JSON Schema（本项目使用的子集）→ TypeScript 类型表达式。 */
-export function schemaToTs(schema: unknown, indent = 0): string {
+export function schemaToTs(schema: unknown, indent = 0, ctx?: CodegenCtx): string {
   if (!schema || typeof schema !== 'object') return 'unknown';
   const s = schema as JsonSchema;
+
+  /**
+   * ⚠️ `$ref` 必须**最先**判断，而且这是修一个真实缺陷。
+   *
+   * 缺陷（第 13 轮真实运行暴露）：PM 交出的契约是**精确**的 ——
+   * `Book.status` 写成 `{"$ref":"#/$defs/BookStatus"}`、`borrowerId` 写成
+   * `{"type":["string","null"]}`、`history.items` 写成 `{"$ref":"#/$defs/HistoryEntry"}`。
+   * 但原来的实现 `switch (s.type)` 遇到 `$ref`（没有 `type`）直接落到 `default`，
+   * 于是**全部变成 `Record<string, unknown>`**。
+   *
+   * 后果是一条完整的连锁反应，而且每一环看起来都像「模型能力不足」：
+   *   1. 后端角色按契约类型写代码 → 编译报 TS2322/TS2367（16 个）→ A4 FAIL
+   *   2. A4 机械归因给 `backend` → 派返工单
+   *   3. 但**根因在引擎的类型生成器里**，角色改不动那份生成物（它来自冻结契约）
+   *   4. 角色唯一的出路是**放弃契约类型、自己重新声明模型** → A4 于是 PASS
+   *   5. 结果是**契约漂移** —— 正是 A7 想防的那件事 —— 而 A7 只在 CONTRACTING/REVIEW 跑，
+   *      且是 WARN 不阻断。于是这一轮拿到了一个**建立在坏契约之上的假绿灯**。
+   *
+   * 这一条是 §6.1 那条规律的**第五次**出现：约定没传达，失败却长得像能力不足。
+   * 区别是这次的「约定」是引擎自己生成的类型。
+   */
+  if (typeof s.$ref === 'string') {
+    const name = ctx ? resolveRefName(s.$ref, ctx) : null;
+    // 解析得到 → 用具名类型；解析不到 → `unknown`（**响亮的失败**，而不是伪装成「任意对象」）。
+    // 选 `unknown` 而不是 `Record<string, unknown>` 是刻意的：
+    // 后者能让下游代码照常编译，于是坏契约会一路安静地传到运行期。
+    return name ?? 'unknown';
+  }
+
+  /**
+   * 联合类型数组：JSON Schema 里 `type: ["string","null"]` 表示「可空」。
+   * 同样原先是漏的 —— 数组匹配不上任何 `case`，落到 `default` 变成 `Record<string, unknown>`。
+   */
+  if (Array.isArray(s.type)) {
+    const list = (s.type as unknown[]).map((t) => schemaToTs({ ...s, type: t }, indent, ctx));
+    return [...new Set(list)].join(' | ') || 'unknown';
+  }
 
   if (Array.isArray(s.enum)) {
     return (s.enum as unknown[]).map((v) => JSON.stringify(v)).join(' | ') || 'never';
@@ -33,11 +98,11 @@ export function schemaToTs(schema: unknown, indent = 0): string {
   if (s.const !== undefined) return JSON.stringify(s.const);
 
   if (Array.isArray(s.oneOf) || Array.isArray(s.anyOf)) {
-    const list = ((s.oneOf ?? s.anyOf) as unknown[]).map((x) => schemaToTs(x, indent));
-    return [...new Set(list)].join(' | ');
+    const list = ((s.oneOf ?? s.anyOf) as unknown[]).map((x) => schemaToTs(x, indent, ctx));
+    return [...new Set(list)].join(' | ') || 'unknown';
   }
   if (Array.isArray(s.allOf)) {
-    return ((s.allOf as unknown[]).map((x) => schemaToTs(x, indent))).join(' & ');
+    return ((s.allOf as unknown[]).map((x) => schemaToTs(x, indent, ctx))).join(' & ');
   }
 
   switch (s.type) {
@@ -51,7 +116,7 @@ export function schemaToTs(schema: unknown, indent = 0): string {
     case 'null':
       return 'null';
     case 'array': {
-      const inner = schemaToTs(s.items, indent);
+      const inner = schemaToTs(s.items, indent, ctx);
       const needsParens = inner.includes('|') || inner.includes('&');
       return `${needsParens ? `(${inner})` : inner}[]`;
     }
@@ -68,6 +133,11 @@ export function schemaToTs(schema: unknown, indent = 0): string {
         // 三元的两个条件**恒为真**，那个 `: '{}'` 分支永远走不到。
         // 结果本身是对的，但那段代码看起来像在「处理边界」，实际是死代码：
         // 下次有人想改这里的语义时，会以为自己有两条分支可调。
+        //
+        // ⚠️ 走到这里现在**只剩「契约真的没说这是什么」**一种情形了。
+        // 以前 `$ref` 与联合类型也会掉进来，于是同一个 `Record<string, unknown>`
+        // 同时代表三件完全不同的事（没说 / 引用 / 可空）——
+        // 而那正是缺陷能藏住的原因：报告里看不出「契约没说」和「生成器不会解析」的区别。
         return s.additionalProperties === false ? '{}' : 'Record<string, unknown>';
       }
       const pad = '  '.repeat(indent + 1);
@@ -75,7 +145,7 @@ export function schemaToTs(schema: unknown, indent = 0): string {
         .map((k) => {
           const opt = required.has(k) ? '' : '?';
           const safe = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : JSON.stringify(k);
-          return `${pad}${safe}${opt}: ${schemaToTs(props[k], indent + 1)};`;
+          return `${pad}${safe}${opt}: ${schemaToTs(props[k], indent + 1, ctx)};`;
         })
         .join('\n');
       return `{\n${body}\n${'  '.repeat(indent)}}`;
@@ -98,6 +168,8 @@ export function generateContractTypes(contract: ContractDoc): string {
 
   const schemas = contract.jsonSchemas ?? {};
   const names = Object.keys(schemas);
+  // 定义表：所有具名 schema 都必须在生成文件里可见，`$ref` 才能解析成类型名。
+  const ctx: CodegenCtx = { knownNames: new Set(names) };
   if (names.length === 0) {
     lines.push('// 契约未定义任何数据模型。');
   }
@@ -105,11 +177,11 @@ export function generateContractTypes(contract: ContractDoc): string {
     const schema = schemas[name] as JsonSchema;
     const isObject = schema && typeof schema === 'object' && (schema.type === 'object' || schema.properties);
     if (isObject && Array.isArray(schema.required) === false && !schema.additionalProperties && !schema.oneOf) {
-      lines.push(`export type ${name} = ${schemaToTs(schema)};`);
+      lines.push(`export type ${name} = ${schemaToTs(schema, 0, ctx)};`);
     } else if (isObject && !schema.oneOf && !schema.anyOf) {
-      lines.push(`export interface ${name} ${schemaToTs(schema)}`);
+      lines.push(`export interface ${name} ${schemaToTs(schema, 0, ctx)}`);
     } else {
-      lines.push(`export type ${name} = ${schemaToTs(schema)};`);
+      lines.push(`export type ${name} = ${schemaToTs(schema, 0, ctx)};`);
     }
     lines.push('');
   }

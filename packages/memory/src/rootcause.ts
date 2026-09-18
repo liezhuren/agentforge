@@ -60,6 +60,7 @@ export type RootCauseClass =
   // ── 契约类：项目声明缺失或错配 ────────────────────────────────────
   | 'contract:missing-declaration' // 缺 healthUrl / 缺 run 命令 → 锚点只能 SKIPPED
   | 'contract:typecheck-misconfigured' // 如 TS18003：tsconfig 里没有任何输入文件
+  | 'contract:codegen-degraded-types' // 引擎生成契约类型时把精确类型降级了（**诊断类，不进记忆**）
   // ── 基准类：被验证者动了验证基准（A8 守的就是这条）────────────────────
   | 'baseline:tampered'
   // ── 代码类：产出真的是错的 —— 永不进记忆 ───────────────────────────
@@ -140,6 +141,8 @@ export const CLASS_LABELS: Record<RootCauseClass, string> = {
   'environment:offline-registry': '无外网，依赖的真实性未能向 registry 核实',
   'contract:missing-declaration': '项目未声明锚点所需的契约（healthUrl / run 命令）',
   'contract:typecheck-misconfigured': '类型检查配置本身有问题（如 tsconfig 没有任何输入文件）',
+  'contract:codegen-degraded-types':
+    '⚠️ 引擎生成契约类型时把精确类型降级成了 Record<string, unknown>（**是引擎的问题，不是角色的问题**）',
   'baseline:tampered': '产出改写了验证基准文件',
   'code:type-error': '类型错误（产出自身的问题）',
   'code:test-assertion-failure': '测试断言失败（产出自身的问题）',
@@ -243,6 +246,23 @@ const RULES: Rule[] = [
         ? 'TS18003：类型检查配置里没有任何输入文件 —— 说明 tsconfig 的 include/exclude 与产出实际落盘位置不一致，是项目契约错配，不是代码写错。'
         : null;
     },
+  },
+  {
+    id: 'A4.degraded-contract-types',
+    anchors: ['A4'],
+    cls: 'contract:codegen-degraded-types',
+    textBased: true,
+    match: (_a, f) =>
+      /Record<string, unknown>/.test(f.message)
+        ? '编译错误里出现了 `Record<string, unknown>` —— 这个类型是**契约类型生成器的降级产物**。' +
+          '第 13 轮真实运行的完整链条：PM 交出的契约用的是 `$ref` 与 `type:["string","null"]`（完全正确的写法），' +
+          '但生成器不认识它们，把精确类型全降级成了 `Record<string, unknown>`；' +
+          '于是**按契约写代码必然编译失败**，A4 机械归因给 backend 派返工单 —— ' +
+          '可角色改不动那份生成物（它来自冻结契约），唯一出路是**放弃契约类型、自己重声明模型**，' +
+          'A4 于是 PASS，代价是**契约漂移**（正是 A7 想防的）。' +
+          '⚠️ 所以这一类**不是角色的能力问题，也不是可传达的约定** —— 它是引擎缺陷信号，' +
+          '所以本类**刻意不进记忆**（进记忆意味着把它当成「告诉角色该怎么做」的经验，那是错的）。'
+        : null,
   },
   {
     id: 'A4.other-ts',
