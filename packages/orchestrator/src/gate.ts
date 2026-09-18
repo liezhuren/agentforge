@@ -51,12 +51,22 @@ import { newBundleId, type EscalationBundle } from './escape.ts';
  *    而覆盖矩阵（B2 的主体）要等任务图存在才有意义。在 INTAKE 跑 B2 只会必然得到
  *    「尚无任务图」的 FAIL —— 那不是发现问题，是检查用错了地方。
  *  - REVIEW 是唯一含 B3 的阶段，因此也是**唯一唤醒主理人**的阶段。
+ *
+ * ⚠️ **A7 从第 13 轮起也放进 BUILDING** —— 这一条是被一次真实缺陷逼出来的：
+ * A7 是唯一检查「契约漂移」的锚点，而它原本只在 CONTRACTING 与 REVIEW 跑。
+ * 可是**代码是在 BUILDING 写出来的**，契约漂移恰恰发生在那里：
+ *   - CONTRACTING 时还没有代码，A7 只能报「实现一致性未经验证」（warn）
+ *   - BUILDING 时漂移真的发生了，但 A7 不看
+ *   - 等到 REVIEW 才看，那时返工成本已经付出去了，而且中间几轮 Gate 是**盲的**
+ * 所以「防漂移的检查不在漂移发生的阶段」原本是成立的 —— 这不是效率问题，是那个检查
+ * 在最需要它的地方缺席。A7 是纯静态检查（不编译、不跑测试、不花 token），
+ * 放进 BUILDING 的代价接近 0。
  */
 export const STAGE_ANCHORS: Record<StageId, AnchorId[]> = {
   INTAKE: [],
   PLANNING: ['B2'],
   CONTRACTING: ['A7', 'B2'],
-  BUILDING: ['A1', 'A2', 'A3', 'A4', 'A5', 'A8', 'B2'],
+  BUILDING: ['A1', 'A2', 'A3', 'A4', 'A5', 'A7', 'A8', 'B2'],
   REVIEW: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'B1', 'B2', 'B3'],
   ROUNDTABLE: [],
   ARBITRATION: [],

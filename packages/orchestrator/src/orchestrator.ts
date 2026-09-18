@@ -17,6 +17,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type {
   AnchorRunResult,
   ArtifactId,
@@ -43,6 +45,7 @@ import {
   type ContractViolation,
   type ProjectContract,
 } from '../../core/src/projectcontract.ts';
+import { sha256 } from '../../core/src/hash.ts';
 import { writeContractTypes, GeneratedTypesPathError } from '../../core/src/contractcodegen.ts';
 import { DEFAULT_COMMAND_POLICY } from '../../core/src/exec.ts';
 import { DecisionLog } from '../../core/src/decisionlog.ts';
@@ -925,6 +928,38 @@ export class Orchestrator {
                 forbiddenPaths: ['package.json', ...Object.keys(this.contract.protectedFiles)],
               });
               this.logger.info(`已从冻结契约生成共享类型：${gen.path}（${gen.bytes} 字节）`);
+              /**
+               * ⚠️ **生成物写完就立刻纳入受保护基准。**
+               *
+               * 这一段是补一个真实缺口（第 13 轮暴露）：
+               * 生成的契约类型文件**派生自冻结契约**，所以它是验证基准的一部分 ——
+               * 可它既不在 `ENGINE_PROTECTED_FILES`（那是 package.json / tsconfig.json），
+               * 也不在项目声明的 `protectedFiles` 里（那是项目方预先知道的文件，
+               * 而这份文件在运行开始时还不存在）。
+               *
+               * 后果：角色可以**改写它**，而且没有任何锚点会说话 ——
+               * 契约于是被静默改掉，A7 又只看「有没有 import」。
+               * 实测那一轮角色没有改它（mtime 未变），而是**绕开**了它，
+               * 但那条路是通的 —— 「通的路」在这个项目里等同于「会发生的事」。
+               *
+               * 收编之后两道闸同时生效（都不需要新机制）：
+               *   1. **写盘入口**（`applyProjectContract` → `enforceProjectContract`）会拦下
+               *      任何试图改写它的产出，记为契约违规
+               *   2. **A8 锚点**会比对内容 hash，改了直接 FAIL
+               */
+              try {
+                const genAbs = join(this.o.projectRoot, gen.path);
+                this.contract.protectedFiles[gen.path] = sha256(await readFile(genAbs, 'utf8'));
+                this.logger.info(
+                  `生成契约类型已纳入受保护基准：${gen.path} —— 产出不得改写（违反由 A8 报 FAIL）`,
+                );
+              } catch (err) {
+                // 收编失败不该让 run 崩，但必须说出来：这意味着「生成物不被保护」这个缺口又回来了。
+                this.logger.warn(
+                  `生成契约类型未能纳入受保护基准（${gen.path}）：${(err as Error).message}。` +
+                    '本次运行中产出可以改写它，且不会有锚点报错 —— 请当作已知缺口看待。',
+                );
+              }
               await this.log?.append('artifact.frozen', {
                 contractId: contract.id,
                 frozenHash: contract.frozenHash,

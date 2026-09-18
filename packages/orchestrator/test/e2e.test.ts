@@ -1774,3 +1774,116 @@ test('契约：干净的项目里 A8 PASS，且不产生任何工单（保护机
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * 🔴 **生成的契约类型文件也是验证基准，产出不得改写它。**
+ *
+ * 存在的理由（第 13 轮真实运行暴露的缺口）：
+ * `shared/contract/types.ts` **派生自冻结契约**，所以它和 `tsconfig.json` 属于同一类东西 ——
+ * 验证基准。可它原先不在任何保护名单里：
+ *   - 不在 `ENGINE_PROTECTED_FILES`（那只有 package.json / tsconfig.json）
+ *   - 也不在项目声明的 `protectedFiles` 里（项目方预先声明的是**运行前就存在**的文件，
+ *     而这份文件要到 CONTRACTING 才被生成）
+ * 于是角色可以静默改掉它，而没有任何锚点会说话（A7 只看「有没有 import」）。
+ *
+ * 实测那一轮角色**没有**改它，而是绕开了它 —— 但「通的路」在这个项目里等同于「会发生的事」。
+ * 所以本轮把「生成物写完即纳入受保护基准」补上了，这个用例守的就是那条收编。
+ */
+test('🔴 契约：产出试图改写**生成的契约类型文件** → 原生成物存活，记为契约违规，A8 FAIL', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'af-contract-gen-'));
+  try {
+    const profile = await scaffoldProject(root);
+    await write(root, 'tsconfig.json', ORIGINAL_TSCONFIG);
+
+    const events: ForgeEvent[] = [];
+    const bus = new EventBus();
+    bus.on((e) => events.push(e));
+
+    // 角色交出的 CodeModule 夹带了一份「自己版本」的契约类型 —— 这就是契约漂移
+    const TAMPERED_TYPES = 'export interface Task { id: string; title: string; secret?: string }\n';
+
+    const provider = new MockProvider({
+      script: happyScript({
+        'produce:CodeModule:api': {
+          files: [
+            { path: 'src/api/routes.ts', content: API_CODE },
+            { path: 'shared/contract/types.ts', content: TAMPERED_TYPES },
+          ],
+        },
+        'repair:CodeModule:api': { files: [{ path: 'src/api/routes.ts', content: API_CODE }] },
+      }),
+    });
+
+    const logged: string[] = [];
+    const log = new DecisionLog(root);
+    const orch = new Orchestrator({
+      projectRoot: root,
+      profile,
+      userBrief: USER_BRIEF,
+      runners: createRoleRunners(provider),
+      verifier: new SemanticVerifier({ provider }),
+      provider,
+      humanAvailable: false,
+      offline: true,
+      bus,
+      log,
+      logger: silentLogger('contract-gen-types'),
+    });
+
+    await orch.run();
+
+    // 1) 盘上的生成物必须是**引擎生成的那一份**，不是角色交上来的那一份
+    const onDisk = await readFile(join(root, 'shared/contract/types.ts'), 'utf8');
+    assert.ok(
+      !onDisk.includes('secret'),
+      '角色交的版本不得落盘 —— 生成物派生自冻结契约，产出改不动它',
+    );
+    assert.ok(onDisk.includes('Task'), '引擎生成的类型应当还在原地');
+    assert.ok(
+      onDisk.includes('AgentForge'),
+      '应当还是引擎生成的那份（带生成器抬头），而不是角色手写的那份',
+    );
+
+    // 2) 这次尝试必须**被记下来**，不能静默吞掉
+    const raw = await readFile(join(root, 'decisions.jsonl'), 'utf8');
+    assert.ok(
+      raw.includes('project.contract.violation'),
+      '改写生成契约类型的尝试必须记成一次契约违规（静默无效比明确拒绝更糟）',
+    );
+    assert.ok(raw.includes('shared/contract/types.ts'), '违规记录里必须指出是哪个文件');
+    void logged;
+
+    // 3) A8 必须说话
+    const a8 = events
+      .filter((e): e is Extract<ForgeEvent, { t: 'anchor.ran' }> => e.t === 'anchor.ran')
+      .map((e) => e.result)
+      .filter((r) => r.anchorId === 'A8');
+    assert.ok(a8.length > 0, 'A8 必须真的被跑过');
+    assert.ok(
+      a8.some((r) => r.verdict === 'FAIL'),
+      `改写生成契约类型必须让 A8 FAIL，实际序列：${a8.map((r) => r.verdict).join(',')}`,
+    );
+
+    /**
+     * 4) **A7 必须在 BUILDING 就被跑**（本轮改的机制之一）。
+     *
+     * A7 是唯一检查「契约漂移」的锚点，而它原先只在 CONTRACTING 与 REVIEW 跑。
+     * 可代码是在 BUILDING 写出来的 —— 漂移就在那里发生：
+     * CONTRACTING 时还没有代码（只能报「未经验证」），REVIEW 时返工成本已经付掉了，
+     * 中间几轮 Gate 全是**盲的**。这条断言把「检查要在事情发生的阶段做」钉住，
+     * 免得哪天有人觉得 BUILDING 跑 A7「多余」又把它删掉。
+     */
+    const buildingGates = events
+      .filter((e): e is Extract<ForgeEvent, { t: 'gate.evaluated' }> => e.t === 'gate.evaluated')
+      .map((e) => e.result)
+      .filter((r) => r.stage === 'BUILDING');
+    assert.ok(buildingGates.length > 0, '应当至少经过一次 BUILDING 的 Gate');
+    const a7AtBuilding = buildingGates.some((r) => r.anchors.some((a) => a.anchorId === 'A7'));
+    assert.ok(
+      a7AtBuilding,
+      'A7 必须在 BUILDING 阶段就执行 —— 契约漂移在那里发生，不能在 REVIEW 才第一次看',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

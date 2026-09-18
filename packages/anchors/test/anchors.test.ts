@@ -562,13 +562,87 @@ test('A7：未冻结契约 + 缺生成类型 + 端点未实现 + 前端契约漂
     assert.ok(codes.includes('missing-generated-types'));
     assert.ok(codes.includes('unimplemented-endpoint'));
     assert.ok(codes.includes('undeclared-endpoint'));
-    assert.equal(codes.filter((c) => c === 'contract-duplication').length, 2, '前后端各手写了一份 Task');
 
-    const dup = r.findings.filter((x) => x.code === 'contract-duplication');
-    assert.deepEqual(
-      dup.map((d) => d.targetRole).sort(),
-      ['backend', 'frontend'],
+    /**
+     * 🔴 **生成类型文件不存在时，不许报 contract-duplication。**
+     *
+     * 这条断言在本轮**反了过来**（原来断言「前后端各手写一份 → 报 2 条」）。
+     * 改的理由不是「测试挡路了」，而是原断言建立在一个站不住的推论上：
+     * 它假定「手写类型 = 契约漂移」，**但生成文件根本不存在时，import 是做不到的** ——
+     * 角色除了手写别无选择。此时真正的问题是「文件不存在」（已单独报 fail 且归因给 pm），
+     * 而报 duplication 会把这个 pm 的问题**错误地摊到前后端头上**，
+     * 并且每个模型各报一次（实测一轮能报 12 条）。
+     *
+     * 而 `undeclared-endpoint` 反过来是对的：前端调了契约里没有的端点，
+     * 那是前端自己写错了，跟生成文件在不在没关系 —— 所以它照旧被报出来。
+     */
+    assert.equal(
+      codes.filter((c) => c === 'contract-duplication').length,
+      0,
+      '生成类型文件不存在时不能报「没 import 生成类型」—— 那个文件根本不存在，角色没有别的选择',
     );
+    // 真正该被归因给 pm 的是「文件不存在」，而且只报一次
+    assert.equal(codes.filter((c) => c === 'missing-generated-types').length, 1);
+    assert.equal(
+      r.findings.find((x) => x.code === 'missing-generated-types')?.targetRole,
+      'pm',
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('🔴 A7：生成类型文件存在但角色手写模型没 import → contract-duplication 报 **fail**（不再只是 warn）', async () => {
+  const f = await makeFixture();
+  try {
+    await f.store.put({
+      kind: 'Contract',
+      producer: 'pm',
+      content: {
+        version: 1,
+        openapi: { openapi: '3.1.0', paths: { '/api/tasks': {} } },
+        jsonSchemas: { Task: { type: 'object' } },
+        generatedTypesPath: 'shared/contract/types.ts',
+        changeRequests: [],
+      },
+    });
+    // 契约已冻结 + 生成文件真的存在（这两点是这条检查能成立的前提）
+    const art = f.store.head('Contract')!;
+    await f.store.freeze(art.id);
+    await write(f.root, 'shared/contract/types.ts', 'export interface Task { id: string }\n');
+
+    // 后端：用了生成类型（合法）—— 不该被报
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/routes.ts',
+            content: "import type { Task } from '../../../shared/contract/types.ts';\napp.get('/api/tasks', handler);\n",
+          },
+        ],
+      },
+    });
+    // 前端：自己手写了一份 Task，没有 import 生成文件 —— 这才是真的漂移
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'frontend',
+      scope: 'web',
+      content: {
+        files: [{ path: 'src/web/api.ts', content: "fetch('/api/tasks');\ninterface Task { id: string }\n" }],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const dup = r.findings.filter((x) => x.code === 'contract-duplication');
+    assert.equal(dup.length, 1, '只有真正手写又没 import 的那个文件才该被报');
+    assert.equal(dup[0]!.targetRole, 'frontend');
+    // 严重度必须是 fail：它判的是契约漂移本身，而且被归因的角色**有能力修好它**
+    // （把重声明改成 import 即可）—— 这一点与「生成物错了」那种角色改不动的失败不同
+    assert.equal(dup[0]!.severity, 'fail', '契约漂移不得再只是 warn（false green 就是这么来的）');
+    assert.equal(r.verdict, 'FAIL');
   } finally {
     await f.cleanup();
   }

@@ -67,7 +67,7 @@ node scripts/memory-report.ts        # 用 13 个真实运行工作区验证记�
 ```bash
 git clone https://github.com/liezhuren/agentforge && cd agentforge
 
-node scripts/run-tests.ts                      # 全部测试（344 个，约 50 秒）
+node scripts/run-tests.ts                      # 全部测试（354 个，约 55 秒）
 node packages/orchestrator/src/cli-e2e.ts      # 端到端闭环演示（四个场景，全离线）
 node scripts/anchor-benchmark.ts               # 幻觉靶场：42 样本，出 docs/10
 node scripts/verify-real-app.ts                # 生成一个真实小应用，再绕开锚点系统独立复核

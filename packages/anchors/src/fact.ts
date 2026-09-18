@@ -1143,7 +1143,10 @@ export const A7: Anchor = {
         if (!declared) {
           findings.push({
             code: 'undeclared-endpoint',
-            severity: 'warn',
+            // ⚠️ 从 warn 提升为 fail（理由见下面 contract-duplication 那段的长注释）。
+            // 「前端调用了契约未声明的端点」不是风格问题，它意味着**运行期会 404**，
+            // 而这正是整套契约机制存在的理由。
+            severity: 'fail',
             message: `前端调用了契约中未声明的端点 ${called} —— 契约漂移的典型征兆`,
             targetRole: 'frontend',
             data: { called, declared: openapiPaths },
@@ -1158,25 +1161,47 @@ export const A7: Anchor = {
     // 生成文件的 basename（如 "types"）—— 这个字符串在代码里随处可见，
     // 等于白检查。现在要求代码里真的有一条 import 语句，其模块说明符包含
     // 生成路径的末两段（如 "contract/types"）。
+    //
+    // ── 为什么从 warn 提升为 fail（第 13 轮真实缺陷的直接结果）────────────────
+    //
+    // 这条检查原本是 warn，而它历史上触发了 **33 次**（全部运行里最多的一类）。
+    // 当时的判断是「噪音太大，不阻断」。**但那个判断建立在一个错误的因果上**：
+    // 它之所以响个不停，是因为契约生成器不认 `$ref`，把精确类型全降级成了
+    // `Record<string, unknown>` —— 角色**没法**用那些类型，只能自己重声明。
+    // 也就是说 **33 次噪音是那个缺陷的症状，不是这条检查太严**。
+    //
+    // 缺陷修好之后，「import 生成的类型」变成一件真的做得到的事，
+    // 于是这条检查的两个性质都变了：
+    //   1. 它判的是**契约漂移本身**（`docs/04` 里整套契约机制存在的理由），不是风格
+    //   2. 被归因的角色**有能力修好它**（把重声明改成 import 即可）——
+    //      这一点很关键：不像「生成物错了」那种角色改不动的失败，这条是**收敛**的
+    // 所以它现在报 fail。
+    //
+    // ⚠️ 同时修一个假阳性：生成的类型文件**不存在**时不许报重复。
+    // 那种情况下 `importsGenerated` 必然为 false，于是每一处同名声明都会被判重复 ——
+    // 而真正的问题是「文件不存在」（上面第 2 项已经报了 fail，且归因给 pm）。
+    // 不修的话，提升严重度会把一个 pm 的问题**错误地摊到前后端头上**，
+    // 而且要每个模型各报一次（实测一轮能报 12 条）。
     const schemaNames = Object.keys(contract.jsonSchemas ?? {});
-    const needle = generatedTypesNeedle(contract.generatedTypesPath);
-    const importRe = new RegExp(`from\\s+['"\`][^'"\`]*${escapeRe(needle)}['"\`]`);
-    for (const m of [...apiModules, ...webModules]) {
-      const files = (m.content as CodeModule).files ?? [];
-      for (const f of files) {
-        const importsGenerated = typesText !== null && importRe.test(f.content);
-        if (importsGenerated) continue;
-        for (const name of schemaNames) {
-          const dup = new RegExp(`\\b(?:interface|type)\\s+${escapeRe(name)}\\b`).test(f.content);
-          if (dup) {
-            findings.push({
-              code: 'contract-duplication',
-              severity: 'warn',
-              message: `${f.path} 手写了契约中已定义的模型 "${name}"，却没有 import 生成的类型文件 —— 这是前后端契约漂移的根源`,
-              file: f.path,
-              targetRole: m.scope === 'web' ? 'frontend' : 'backend',
-              data: { model: name, generatedTypesPath: contract.generatedTypesPath, expectedImportContains: needle },
-            });
+    if (typesText !== null && schemaNames.length > 0) {
+      const needle = generatedTypesNeedle(contract.generatedTypesPath);
+      const importRe = new RegExp(`from\\s+['"\`][^'"\`]*${escapeRe(needle)}['"\`]`);
+      for (const m of [...apiModules, ...webModules]) {
+        const files = (m.content as CodeModule).files ?? [];
+        for (const f of files) {
+          if (importRe.test(f.content)) continue;
+          for (const name of schemaNames) {
+            const dup = new RegExp(`\\b(?:interface|type)\\s+${escapeRe(name)}\\b`).test(f.content);
+            if (dup) {
+              findings.push({
+                code: 'contract-duplication',
+                severity: 'fail',
+                message: `${f.path} 手写了契约中已定义的模型 "${name}"，却没有 import 生成的类型文件 —— 这是前后端契约漂移的根源。契约已在 ${contract.generatedTypesPath} 生成该模型，请改为 import 它`,
+                file: f.path,
+                targetRole: m.scope === 'web' ? 'frontend' : 'backend',
+                data: { model: name, generatedTypesPath: contract.generatedTypesPath, expectedImportContains: needle },
+              });
+            }
           }
         }
       }
