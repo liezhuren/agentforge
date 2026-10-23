@@ -7,7 +7,8 @@
       "baseUrl": "https://api.modelverse.cn/v1",
       "apiKey": "${DEEPSEEK_API_KEY}",
       "defaultModel": "deepseek-v4.1-flash-1017",
-      "jsonMode": "auto"
+      "jsonMode": "auto",
+      "timeoutMs": 300000
     }
   },
   "roles": {
