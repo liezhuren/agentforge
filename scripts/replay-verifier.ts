@@ -25,11 +25,19 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ArtifactStore, silentLogger } from '../packages/core/src/index.ts';
+import { ArtifactStore, describeDotEnv, loadDotEnv, silentLogger } from '../packages/core/src/index.ts';
 import { loadConfigFile, buildLlm } from '../packages/llm/src/index.ts';
 import { SemanticVerifier } from '../packages/roles/src/verify.ts';
 
 const argv = process.argv.slice(2);
+
+// 先把仓库根的 `.env` 注入 process.env —— 必须发生在下面那句
+// `if (!process.env.DEEPSEEK_API_KEY)` 之前，否则配了 .env 也会被判「缺少 key」。
+{
+  const d = loadDotEnv({ cwd: join(import.meta.dirname, '..') });
+  if (d.file !== null) console.log(describeDotEnv(d));
+}
+
 const ws = argv.find((a) => !a.startsWith('--'));
 const samples = Number(argv.includes('--samples') ? argv[argv.indexOf('--samples') + 1] : 3);
 const outPath = argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : undefined;

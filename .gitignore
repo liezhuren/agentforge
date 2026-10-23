@@ -19,6 +19,18 @@ apps/web/dist/
 .askpass.*
 *.pem
 
+# .env：本地环境变量（API key 等）。**必须**在这里，否则 `git add -A` 会把它带上去。
+# 参赛/发布场景下这是硬性要求：规则明确「不得提交真实密钥、Token、密码」。
+# 只保留 `.env.example`（模板，不含任何真实值）。
+.env
+.env.*
+!.env.example
+
+# 随手放 key 的文件：它们会落在源码目录里（例如 packages/key.txt），
+# 一旦被 `git add -A` 带上就是一次真实泄露。规则挡住比记性可靠。
+key.txt
+*.key
+
 # 临时文件：写在这里的都是一次性产物，绝不该进仓库。
 # 这一条是被教训出来的：`git add -A` 会把「刚刚用 -F 传给 git commit 的消息文件」
 # 一起提交进去（先 add、后建文件，顺序一错就中招，已实际发生过一次）。

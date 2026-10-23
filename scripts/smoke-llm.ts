@@ -14,10 +14,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { loadConfigFile, buildLlm } from '../packages/llm/src/registry.ts';
+import { describeDotEnv, loadDotEnv } from '../packages/core/src/dotenv.ts';
 import { requirementSetSchema } from '../packages/core/src/schemas.ts';
 import { validateSchema, formatSchemaErrors } from '../packages/core/src/schema.ts';
 
 const CONFIG = join(import.meta.dirname, '..', 'agentforge.config.json');
+
+// 先注入 `.env`，再判「有没有 key」（顺序反了就会配了也报缺 key）
+{
+  const d = loadDotEnv({ cwd: join(import.meta.dirname, '..') });
+  if (d.file !== null) console.log(describeDotEnv(d));
+}
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.error('缺少 DEEPSEEK_API_KEY 环境变量');

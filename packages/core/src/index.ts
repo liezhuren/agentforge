@@ -10,3 +10,4 @@ export * from './logger.ts';
 export * from './fsutil.ts';
 export * from './contractcodegen.ts';
 export * from './projectcontract.ts';
+export * from './dotenv.ts';

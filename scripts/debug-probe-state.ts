@@ -1,6 +1,11 @@
 /** 调试：buildLlm 之后 provider 到底处于哪个 jsonMode。 */
 import { join } from 'node:path';
+import { describeDotEnv, loadDotEnv } from '../packages/core/src/dotenv.ts';
 import { loadConfigFile, buildLlm } from '../packages/llm/src/index.ts';
+
+// 从仓库根读 `.env`（脚本常从仓库根运行，但 `import.meta.dirname` 更确定）
+const dotenv = loadDotEnv({ cwd: join(import.meta.dirname, '..') });
+if (dotenv.file !== null) console.log(describeDotEnv(dotenv));
 
 const ws = process.argv[2] ?? 'workspace/llm-11';
 const config = await loadConfigFile(join(import.meta.dirname, '..', 'agentforge.config.json'));

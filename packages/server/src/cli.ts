@@ -12,7 +12,7 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Logger } from '../../core/src/index.ts';
+import { Logger, describeDotEnv, loadDotEnv } from '../../core/src/index.ts';
 import { createForgeServer } from './http.ts';
 
 const ROOT = resolve(join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..'));
@@ -79,6 +79,13 @@ export async function runServerCli(argv: string[]): Promise<number> {
 
 const isEntry = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
+  // 与 cli-run.ts 同理：`.env` 必须在读取「真实 LLM」配置之前注入。
+  // 放在 isEntry 里，import 本模块的测试不受仓库根 `.env` 影响。
+  const dotenv = loadDotEnv({ cwd: process.cwd() });
+  if (dotenv.file !== null || dotenv.skipped.length > 0) {
+    console.error(`${C.dim}${describeDotEnv(dotenv)}${C.reset}`);
+  }
+
   runServerCli(process.argv.slice(2))
     .then((code) => {
       if (code !== 0) process.exitCode = code;

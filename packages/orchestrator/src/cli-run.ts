@@ -20,7 +20,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { DecisionLog, EventBus, Logger, readJsonOrNull, type ProjectProfile } from '../../core/src/index.ts';
+import { DecisionLog, EventBus, Logger, describeDotEnv, loadDotEnv, readJsonOrNull, type ProjectProfile } from '../../core/src/index.ts';
 import {
   CONFIG_FILENAME,
   ReplayProvider,
@@ -557,6 +557,15 @@ const isEntry =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntry) {
+  // 先加载 `.env`，再读配置 —— 因为配置里写的是 `${DEEPSEEK_API_KEY}`，
+  // 而 `expandEnv()` 是在解析配置时从 `process.env` 取的。
+  // 放在 `isEntry` 里而不是模块顶层是刻意的：**import 本模块的测试不受影响**，
+  // 否则仓库根有个 `.env` 就会悄悄改变测试看到的「有没有 key」。
+  const dotenv = loadDotEnv({ cwd: process.cwd() });
+  if (dotenv.file !== null || dotenv.skipped.length > 0) {
+    console.error(`${C.dim}${describeDotEnv(dotenv)}${C.reset}`);
+  }
+
   runCli({ argv: process.argv.slice(2), cwd: process.cwd() })
     .then((code) => {
       if (code !== 0) process.exitCode = code;

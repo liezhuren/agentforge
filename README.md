@@ -67,7 +67,7 @@ node scripts/memory-report.ts        # 用 13 个真实运行工作区验证记�
 ```bash
 git clone https://github.com/liezhuren/agentforge && cd agentforge
 
-node scripts/run-tests.ts                      # 全部测试（354 个，约 55 秒）
+node scripts/run-tests.ts                      # 全部测试（362 个，约 46 秒）
 node packages/orchestrator/src/cli-e2e.ts      # 端到端闭环演示（四个场景，全离线）
 node scripts/anchor-benchmark.ts               # 幻觉靶场：42 样本，出 docs/10
 node scripts/verify-real-app.ts                # 生成一个真实小应用，再绕开锚点系统独立复核
@@ -94,6 +94,11 @@ node packages/orchestrator/src/cli-run.ts --name demo --brief "做一个任务�
 node scripts/inspect-run.ts workspace/demo             # 锚点结论 + 圆桌纪要 + 落盘文件
 node scripts/show-verdict.ts workspace/demo            # 控制台会显示什么（两轴判定）
 ```
+
+> - 也可以把 key 放在仓库根的 **`.env`**（复制 `.env.example` 改成 `.env`），
+>   之后不用每次设环境变量。**`.env` 已在 `.gitignore` 里，不会被提交。**
+> - 端点与模型在 `agentforge.config.json` 里，任何 OpenAI 兼容端点都行 ——
+>   换 `baseUrl` + `model` 即可（本次提交里默认指向一个支持严格 `json_schema` 的网关）。
 
 > - **不要复用已有工作区重跑**：工件库只增，会在半截状态上继续。
 > - 一次真实运行约 **29 万 token / 12 分钟**（12–64 次 LLM 调用，平均 21 次）。
