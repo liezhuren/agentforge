@@ -1193,3 +1193,44 @@ test('buildLlm：关闭探测时明确警告「假定支持严格输出」', asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ════════════════════════════════════════════════════════════════
+// context.maxContextChars：角色上下文预算必须可配
+// ════════════════════════════════════════════════════════════════
+//
+// 默认 24000 是给小项目调的：第 14 轮那份契约有 6.6 万字符，于是被整体跳过，
+// 角色只能照自然语言猜接口（docs/07 §O2）。溢出策略已改成「放不下就压成摘要」，
+// 但这个预算仍然是「一次能看到多少工件」的天花板，大项目需要能调。
+
+test('配置：context.maxContextChars 会被解析出来', () => {
+  const cfg = parseConfig({
+    version: 1,
+    providers: { a: { kind: 'openai-compat', baseUrl: 'http://x/v1', defaultModel: 'm' } },
+    context: { maxContextChars: 120_000 },
+  });
+  assert.equal(cfg.context?.maxContextChars, 120_000);
+});
+
+test('配置：context.maxContextChars 太小或不是整数时明确报错', () => {
+  const base = {
+    version: 1,
+    providers: { a: { kind: 'openai-compat', baseUrl: 'http://x/v1', defaultModel: 'm' } },
+  };
+  assert.throws(
+    () => parseConfig({ ...base, context: { maxContextChars: 100 } }),
+    /context\.maxContextChars 必须是 ≥2000 的整数/,
+  );
+  assert.throws(
+    () => parseConfig({ ...base, context: { maxContextChars: 3000.5 } }),
+    /context\.maxContextChars 必须是 ≥2000 的整数/,
+  );
+  assert.throws(() => parseConfig({ ...base, context: 'big' }), /context 必须是对象/);
+});
+
+test('配置：省略 context 时不报错，且默认值由运行器提供（24000）', () => {
+  const cfg = parseConfig({
+    version: 1,
+    providers: { a: { kind: 'openai-compat', baseUrl: 'http://x/v1', defaultModel: 'm' } },
+  });
+  assert.equal(cfg.context, undefined, '未配置时不应凭空造出 context');
+});

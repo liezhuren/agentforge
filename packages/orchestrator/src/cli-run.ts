@@ -205,7 +205,9 @@ export async function runCli(io: CliIO): Promise<number> {
     out('');
   }
 
-  const runners = createBoundRoleRunners(providers, config.roles);
+  const runners = createBoundRoleRunners(providers, config.roles, {
+    ...(config.context?.maxContextChars !== undefined ? { maxContextChars: config.context.maxContextChars } : {}),
+  });
   const verifier = new SemanticVerifier({ provider: providers.test });
 
   // ── 被生成项目的 profile ────────────────────────────────────

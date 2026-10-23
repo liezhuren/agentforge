@@ -465,7 +465,12 @@ export function createBoundRoleRunners(
       { temperature?: number; maxTokens?: number; model?: string; reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' }
     >
   >,
-  opts: { logger?: Logger; maxAttempts?: number } = {},
+  opts: {
+    logger?: Logger;
+    maxAttempts?: number;
+    /** 上下文预算（字符）。见 `ForgeConfig.context` 的说明；省略即 24000。 */
+    maxContextChars?: number;
+  } = {},
 ): Record<RoleId, LlmRoleRunner> {
   const roles: RoleId[] = ['pm', 'frontend', 'backend', 'test', 'host'];
   const out = {} as Record<RoleId, LlmRoleRunner>;
@@ -479,6 +484,7 @@ export function createBoundRoleRunners(
       ...(b.model !== undefined ? { model: b.model } : {}),
       ...(b.reasoningEffort !== undefined ? { reasoningEffort: b.reasoningEffort } : {}),
       ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
+      ...(opts.maxContextChars !== undefined ? { maxContextChars: opts.maxContextChars } : {}),
       ...(opts.logger ? { logger: opts.logger.child(role) } : {}),
     });
   }

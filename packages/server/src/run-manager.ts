@@ -515,7 +515,10 @@ export class RunManager {
       onNotice: (msg) => this.logger.info(msg),
     });
 
-    const runners = createBoundRoleRunners(built.roleProviders, config.roles, { logger: this.logger });
+    const runners = createBoundRoleRunners(built.roleProviders, config.roles, {
+      logger: this.logger,
+      ...(config.context?.maxContextChars !== undefined ? { maxContextChars: config.context.maxContextChars } : {}),
+    });
     const verifier = new SemanticVerifier({ provider: built.roleProviders.test, logger: this.logger });
 
     // 工作区若已有项目（含 package.json 脚本），按其真实工具链配置锚点；

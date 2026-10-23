@@ -48,6 +48,19 @@ export type ForgeConfig = {
   roles: Partial<Record<RoleId, RoleBinding>>;
   budget?: BudgetPolicy;
   probe?: { enabled?: boolean; useCache?: boolean };
+  /**
+   * 角色上下文的预算（**字符**，不是 token）。
+   *
+   * 为什么它必须可配：默认 24000 是给小项目调的。第 14 轮实测里，
+   * 一份 19 条需求的契约有 **6.6 万字符**，而 `renderContext()` 的溢出策略是
+   * 「装不下就跳过」—— 于是**契约从来没有进过任何角色的提示词**，
+   * 后端只能照自然语言猜接口，A7 报 13 个端点未实现（`docs/07 §O2`）。
+   *
+   * 溢出策略现在已经改成「契约放不下就压成确定性摘要，永不静默丢弃」，
+   * 所以这个预算不再是「能不能看到契约」的生死线；它仍然是
+   * 「一次能看到多少工件」的天花板，大项目里值得调高（代价是每次调用的 prompt 变大）。
+   */
+  context?: { maxContextChars?: number };
   /** 工作区根目录（被生成项目的位置）。省略时用 <cwd>/workspace/<name>。 */
   workspace?: string;
   /** run 记录目录。默认 <workspace>/runs。 */
@@ -195,6 +208,19 @@ export function parseConfig(raw: unknown): ForgeConfig {
     }
   }
 
+  // 角色上下文预算。见 ForgeConfig.context 的说明。
+  if (obj.context !== undefined) {
+    const c = obj.context as Record<string, unknown>;
+    if (c === null || typeof c !== 'object' || Array.isArray(c)) {
+      problems.push('context 必须是对象');
+    } else if (c.maxContextChars !== undefined) {
+      const n = c.maxContextChars;
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 2000) {
+        problems.push(`context.maxContextChars 必须是 ≥2000 的整数，实际为 ${JSON.stringify(n)}`);
+      }
+    }
+  }
+
   if (problems.length > 0) throw new ConfigError(problems);
 
   return {
@@ -204,6 +230,7 @@ export function parseConfig(raw: unknown): ForgeConfig {
     roles,
     ...(obj.budget ? { budget: obj.budget as BudgetPolicy } : {}),
     ...(obj.probe ? { probe: obj.probe as { enabled?: boolean; useCache?: boolean } } : {}),
+    ...(obj.context ? { context: obj.context as ForgeConfig['context'] } : {}),
     ...(typeof obj.workspace === 'string' ? { workspace: obj.workspace } : {}),
     ...(typeof obj.runsDir === 'string' ? { runsDir: obj.runsDir } : {}),
   };
