@@ -168,6 +168,32 @@ export function digestContract(contract: ContractDoc, opts: ContractDigestOption
 }
 
 /**
+ * 契约里**真正的端点**列表（排除 `components` 这类结构性键）。
+ *
+ * ⚠️ 判据是「键以 `/` 开头」，不是「有没有 HTTP 方法」。
+ *
+ * OpenAPI 规定 `paths` 的每个键**必须**是以 `/` 开头的路径模板；
+ * 不以 `/` 开头的键（`components` / `servers` / `x-foo`）说明层级写错了。
+ * 这个判据比「必须带 HTTP 方法」严格得多地保留了原有行为 ——
+ * 项目里大量契约和测试夹具写的是 `'/api/tasks': {}`（声明了端点但没细化操作），
+ * 用「必须有方法」会把它们全部误判成「不是端点」，那是另一个方向的误伤。
+ *
+ * 为什么需要这条排除（cb-3 实测）：PM 把 `components` 写进了 `paths`，
+ * 覆盖率检查于是要求「有任务认领 components」—— 没有任何任务会去认领它，
+ * CONTRACTING 连挂两轮，最后**带债通过**，3 条需求在写第一行代码前就被标成
+ * `ACCEPTED_WITH_DEBT`。错在检查，不在契约的使用者。
+ */
+export function contractEndpoints(contract: ContractDoc): string[] {
+  const paths = (contract.openapi?.paths ?? {}) as Record<string, unknown>;
+  return Object.keys(paths).filter((p) => p.startsWith('/'));
+}
+
+/** 这个键能不能作为端点（OpenAPI 要求 paths 的键以 `/` 开头）。 */
+export function isEndpointPath(key: string): boolean {
+  return key.startsWith('/');
+}
+
+/**
  * 检查「任务声明的切片」是否覆盖了整个契约。
  *
  * 切分带来一个新的失败模式：**某个端点没有被任何任务认领**，于是永远不会被实现 ——
@@ -185,7 +211,11 @@ export function checkSliceCoverage(
   orphanSchemas: string[];
   phantomSchemas: string[];
 } {
-  const contractPaths = new Set(Object.keys(contract.openapi?.paths ?? {}));
+  // 只比较**真端点**（带 HTTP 方法的）。结构性键（如误放进 paths 的 `components`）
+  // 不该出现在任何一边：不该被要求认领，也不该因为「任务没认领它」而失败。
+  // 但任务真的去「认领」一个非端点键时，仍然算漂移（phantomPaths）——
+  // 那说明 PM 把结构性字段当成了接口，是真实错误，该报。
+  const contractPaths = new Set(contractEndpoints(contract));
   const contractSchemas = new Set(Object.keys(contract.jsonSchemas ?? {}));
 
   const claimedPaths = new Set<string>();

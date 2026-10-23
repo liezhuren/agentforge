@@ -1545,3 +1545,78 @@ test('锚点抛异常不得让整个 Gate 崩溃，而是转成 FAIL 并记录',
     await f.cleanup();
   }
 });
+
+test('🔴 A7：paths 里的结构性键 → warn 而非失败，且不吞掉真端点的覆盖要求', async () => {
+  const f = await makeFixture();
+  try {
+    // cb-3 的真实形状：17 个键里有 1 个是 components（不是端点）
+    await f.store.put({
+      kind: 'Contract',
+      producer: 'pm',
+      content: {
+        version: 1,
+        openapi: {
+          openapi: '3.1.0',
+          paths: {
+            '/api/a': {},
+            '/api/b': {},
+            components: { schemas: { Thing: { type: 'object' } } },
+          },
+        },
+        jsonSchemas: { Thing: { type: 'object' } },
+        generatedTypesPath: 'shared/contract/types.ts',
+        changeRequests: [],
+      },
+    });
+    const art = f.store.head('Contract')!;
+    await f.store.freeze(art.id);
+    await write(f.root, 'shared/contract/types.ts', 'export interface Thing { id: string }\n');
+    // 两个真端点都被认领
+    await f.store.put({
+      kind: 'TaskGraph',
+      producer: 'pm',
+      content: {
+        tasks: [
+          {
+            id: 'T-01',
+            title: '实现 a 与 b',
+            owner: 'backend',
+            scope: 'api',
+            dependsOn: [],
+            requirementIds: ['R-001'],
+            deliverable: 'CodeModule',
+            acceptance: ['GET /api/a 返回 200'],
+            contractPaths: ['/api/a', '/api/b'],
+            contractSchemas: ['Thing'],
+          },
+        ],
+      },
+    });
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [{ path: 'src/api/routes.ts', content: "export const ROUTES = ['/api/a', '/api/b'];\n" }],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const codes = r.findings.map((x) => x.code);
+
+    assert.ok(
+      !codes.includes('orphan-contract-path'),
+      'components 不是端点，不许要求任何任务认领它（cb-3 就是在这里连挂两轮然后带债通过）',
+    );
+    assert.ok(
+      !codes.includes('phantom-contract-path'),
+      '任务只认领两个真端点，不该被判成契约漂移',
+    );
+    const warn = r.findings.find((x) => x.code === 'contract-non-operation-path');
+    assert.ok(warn, '结构性键出现在 paths 里是契约写错了，必须可见');
+    assert.equal(warn!.severity, 'warn', '它是契约质量问题，不该阻断整个阶段');
+    assert.equal(warn!.targetRole, 'pm');
+  } finally {
+    await f.cleanup();
+  }
+});

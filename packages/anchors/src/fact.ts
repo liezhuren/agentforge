@@ -10,6 +10,8 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import {
   checkSliceCoverage,
+  contractEndpoints,
+  isEndpointPath,
   execCapture,
   probeCommand,
   readJsonOrNull,
@@ -1079,8 +1081,7 @@ export const A7: Anchor = {
     }
 
     // 2) 生成的类型文件必须真实存在
-    const typesText = await ctx.readFile(contract.generatedTypesPath);
-    if (typesText === null) {
+    const typesText = await ctx.readFile(contract.generatedTypesPath);    if (typesText === null) {
       findings.push({
         code: 'missing-generated-types',
         severity: 'fail',
@@ -1095,7 +1096,33 @@ export const A7: Anchor = {
     // 只有在**已经存在后端代码工件**时才做这项检查。CONTRACTING 阶段还没有任何代码，
     // 此时判定「端点未实现」不是发现问题，而是检查用错了时机（第一版就踩了这个坑，
     // 导致契约刚冻结就被判 FAIL）。没有代码时如实标注「实现一致性尚未验证」。
-    const openapiPaths = Object.keys(contract.openapi?.paths ?? {});
+    const allPathKeys = Object.keys(contract.openapi?.paths ?? {});
+    /**
+     * 只把**以 `/` 开头的键**当端点（OpenAPI 的硬性要求）。
+     *
+     * cb-3 实测：PM 把结构性字段 `components` 写进了 `paths`，
+     * 于是覆盖率检查要求「有任务认领 components」—— 没有任何任务会去认领它，
+     * CONTRACTING 连挂两轮，最后**带债通过**，3 条需求在写第一行代码前就被标成
+     * `ACCEPTED_WITH_DEBT`。错在检查，不在契约的使用者。
+     *
+     * 但也不能假装没看见：结构性键出现在 `paths` 里说明契约层级写错了，
+     * 所以下面单独报一条 **warn**（可见、不阻断）。
+     */
+    const openapiPaths = contractEndpoints(contract);
+    const nonOperationPaths = allPathKeys.filter((p) => !isEndpointPath(p));
+    for (const p of nonOperationPaths) {
+      findings.push({
+        code: 'contract-non-operation-path',
+        // warn 而不是 fail：它不是端点，不会导致任何端点缺失；
+        // 但契约里出现结构性键说明 PM 把 OpenAPI 的层级写错了，值得指出。
+        severity: 'warn',
+        message:
+          `契约 paths 里的 "${p}" 不是以 "/" 开头的路径 —— 它不是端点，已从「端点覆盖」检查中排除。` +
+          '（OpenAPI 要求 paths 的键是路径模板；出现 components/servers 这类键说明层级写错了。）',
+        targetRole: 'pm',
+        data: { path: p },
+      });
+    }
     const apiModules = ctx.store.heads('CodeModule').filter((m) => m.scope === 'api');
     const webModules = ctx.store.heads('CodeModule').filter((m) => m.scope === 'web');
     const missingEndpoints: string[] = [];

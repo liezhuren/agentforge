@@ -115,3 +115,47 @@ test('覆盖检查：多个任务的切片取并集 —— 只要有人认领就
   ]);
   assert.deepEqual(cov.orphanPaths, [], '并集覆盖了全部端点，就不该报孤儿');
 });
+
+/**
+ * 🔴 真实缺陷（cb-3）：契约把 OpenAPI 的结构性键 `components` 写进了 `paths`，
+ * 覆盖率检查于是要求「有任务认领 components」——
+ * 没有任何任务会去认领它，CONTRACTING 连挂两轮，最后**带债通过**，
+ * 3 条需求在写第一行代码之前就被标成 `ACCEPTED_WITH_DEBT`。
+ *
+ * 判据必须是「键以 / 开头」（OpenAPI 的硬性要求），而不是「键存在」。
+ */
+test('🔴 契约 paths 里的结构性键（components）不该被要求认领', () => {
+  const c = {
+    version: 1,
+    openapi: {
+      openapi: '3.1.0',
+      paths: {
+        '/api/a': {},
+        '/api/b': {},
+        // PM 把 components 放错了层级
+        components: { schemas: { Thing: { type: 'object' } } },
+      },
+    },
+    jsonSchemas: { Thing: { type: 'object' } },
+    generatedTypesPath: 'shared/contract/types.ts',
+    changeRequests: [],
+  } as unknown as ContractDoc;
+
+  const cov = checkSliceCoverage(c, [{ paths: ['/api/a', '/api/b'] }, { schemas: ['Thing'] }]);
+  assert.deepEqual(cov.orphanPaths, [], 'components 不是端点，不该被要求认领');
+  assert.deepEqual(cov.phantomPaths, [], '只认领真端点不该算漂移');
+  assert.deepEqual(cov.orphanSchemas, []);
+});
+
+test('🔴 但任务真的去认领一个非端点键时，仍然算契约漂移', () => {
+  const c = {
+    version: 1,
+    openapi: { openapi: '3.1.0', paths: { '/api/a': {}, components: {} } },
+    jsonSchemas: {},
+    generatedTypesPath: 'shared/contract/types.ts',
+    changeRequests: [],
+  } as unknown as ContractDoc;
+
+  const cov = checkSliceCoverage(c, [{ paths: ['/api/a', 'components'] }]);
+  assert.deepEqual(cov.phantomPaths, ['components'], '把结构键当接口认领，说明 PM 概念错了，必须报出来');
+});
