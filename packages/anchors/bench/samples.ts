@@ -551,7 +551,19 @@ export const SAMPLES: BenchSample[] = [
     title: '前端调用了契约未声明的端点',
     injection: "前端 fetch('/api/legacy/tasks') —— 契约里只有 /api/tasks。这就是契约漂移",
     anchors: ['A7'],
-    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'WARN' },
+    /**
+     * `atLeast: 'FAIL'` —— 原先是 WARN。
+     *
+     * 改了锚点判定的严重度，**就必须同步这里的期望**：靶场把「检出了但严重度比期望更高」
+     * 单独记成 `SEVERITY_MISMATCH`、**不算 TP**。于是期望没跟着改时，
+     * 指标会显示「TP 28 → 26、严重度不符 2」，看起来像检出能力退化了，
+     * 实际是**期望过期**。
+     *
+     * 这个坑的教训不是「记得改期望」，而是：**改严重度和改判定逻辑一样，都要跑靶场**。
+     * 我提严重度那次只跑了单元测试，没跑 `scripts/anchor-benchmark.ts` ——
+     * 于是直到换了机器、有人顺手跑了一次靶场，这个问题才浮出来。
+     */
+    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'FAIL' },
     build: async (ctx) => {
       await ctx.pkg({ name: 'bench' });
       // 必须冻结契约：靶场样本的黄金法则是「只注入一个缺陷」。
@@ -583,7 +595,8 @@ export const SAMPLES: BenchSample[] = [
     title: '手写重复契约模型（契约漂移的源头）',
     injection: '契约里已有 Task，后端却又手写了一份 interface Task，且没引用生成的类型文件',
     anchors: ['A7'],
-    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'WARN' },
+    // WARN → FAIL：与 A7-04 同一批改动（契约漂移现在阻断，理由见 fact.ts 里那段长注释）
+    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'FAIL' },
     build: async (ctx) => {
       await ctx.pkg({ name: 'bench' });
       // 同上：只注入「手写重复模型」这一个缺陷，因此契约必须已冻结
