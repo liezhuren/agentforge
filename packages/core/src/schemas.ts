@@ -186,6 +186,11 @@ export const taskGraphSchema: JsonSchema = {
           requirementIds: { type: 'array', minItems: 1, items: { type: 'string' } },
           deliverable: { type: 'string', enum: [...ARTIFACT_KINDS] },
           acceptance: { type: 'array', minItems: 1, items: { type: 'string', minLength: 3 } },
+          // PM 声明的契约切片：这个任务要用哪些端点 / 模型。
+          // 有它，引擎只注入这部分契约（整份 6.6 万字符放进 2.4 万预算会被整体跳过）。
+          // A7 会校验「所有端点都被某个任务认领」，所以切分不会造成 silent drop。
+          contractPaths: { type: 'array', items: { type: 'string' } },
+          contractSchemas: { type: 'array', items: { type: 'string' } },
         },
       },
     },

@@ -1002,17 +1002,38 @@ export class Orchestrator {
             scope: 'web' | 'api' | 'shared';
             deliverable: string;
             requirementIds: string[];
+            /** PM 在任务图里声明的契约切片（可选）。 */
+            contractPaths?: string[];
+            contractSchemas?: string[];
           }>;
 
           if (tasks.length === 0) return { ok: false, reason: '任务图为空，无法派工' };
 
           for (const t of tasks) {
             if (t.deliverable !== 'CodeModule') continue;
+            /**
+             * 把任务声明的**契约切片**透传给角色。
+             *
+             * 为什么这么分工：契约整份注入不可扩展（实测 6.6 万字符 vs 2.4 万预算，
+             * 于是被整体跳过 —— 见 docs/07 §O2）。而「这个任务要哪几个端点」是
+             * **语义判断**，该由 PM（工作流内的角色）在 TaskGraph 里声明，
+             * 不该由引擎去猜。引擎只做两件事：
+             *   1. **按声明执行**（只注入切片）—— 这是权限
+             *   2. 交给 A7 **校验覆盖**（所有端点都被某个任务认领）—— 防止切分引入新的静默丢失
+             */
+            const slice =
+              t.contractPaths?.length || t.contractSchemas?.length
+                ? {
+                    ...(t.contractPaths?.length ? { paths: t.contractPaths } : {}),
+                    ...(t.contractSchemas?.length ? { schemas: t.contractSchemas } : {}),
+                  }
+                : undefined;
             const ok = await this.produce(t.owner, {
               kind: 'CodeModule',
               scope: t.scope,
               taskId: t.id,
               requirementIds: t.requirementIds,
+              ...(slice ? { contractSlice: slice } : {}),
               instruction: codeInstruction(t),
             });
             if (!ok) return { ok: false, reason: `角色 ${t.owner} 未能产出任务 ${t.id} 的代码` };
@@ -1933,6 +1954,10 @@ function planningTasksInstruction(): string {
     '- 每条需求都必须至少被一个任务的 requirementIds 覆盖。',
     '- 每个任务的 acceptance 必须可被锚点或测试机械验证。',
     '- owner 只能是 pm / frontend / backend / test。',
+    '- 所有 deliverable 为 CodeModule 的任务，都要声明 **contractPaths**（这个任务负责实现哪些端点，' +
+      '如 "/api/papers/{id}"）与 **contractSchemas**（这个任务要用到哪些数据模型）。',
+    '  这两项是你计划写进契约的接口面：随后产出的契约必须与它们完全一致，',
+    '  而 A7 会检查「契约里的每个端点都被某个任务认领」，防止有人写了端点却没人实现。',
     '输出 TaskGraph 工件。',
   ].join('\n');
 }

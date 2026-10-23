@@ -1887,3 +1887,79 @@ test('🔴 契约：产出试图改写**生成的契约类型文件** → 原生
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * 🔴 **契约太大时，必须变成「摘要」而不是被静默丢弃。**
+ *
+ * 复现的真实缺陷（`docs/07 §O2`）：19 条需求那轮，契约 `JSON.stringify` 后 **6.6 万字符**，
+ * 而 `maxContextChars` 默认 **2.4 万**。原来的溢出处理是
+ *
+ *     if (body.length > budget) continue;   // 跳过，而且不吭声
+ *
+ * 于是**契约从来没有进过任何角色的提示词** —— 只剩一句「【冻结契约 hash】」。
+ * 后端只能照自然语言自己发明接口路径：A4 能过（代码自洽），A7 却报 13 个契约端点未实现。
+ * 看起来像「模型不会写」，实际是**它没拿到规格**。
+ *
+ * 这条用例守的是：**契约再大也必须以某种形式到达模型**，而且是确定性摘要。
+ */
+test('🔴 契约：超过上下文预算时压缩成摘要送达，而不是被静默跳过', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'af-big-contract-'));
+  try {
+    const profile = await scaffoldProject(root);
+
+    // 造一份「大」契约：25 个端点 + 20 个模型，都塞长描述，确保 JSON.stringify 远超 24k
+    const paths: Record<string, unknown> = {};
+    for (let i = 0; i < 25; i++) {
+      paths[`/api/thing${i}`] = {
+        get: { description: 'd'.repeat(300), responses: { '200': { description: 'ok' } } },
+        post: { description: 'd'.repeat(300), responses: { '201': { description: 'created' } } },
+      };
+    }
+    const jsonSchemas: Record<string, unknown> = {};
+    for (let i = 0; i < 20; i++) {
+      const properties: Record<string, unknown> = {};
+      for (let j = 0; j < 8; j++) {
+        properties[`field${j}`] = { type: 'string', description: 'f'.repeat(150) };
+      }
+      jsonSchemas[`Model${i}`] = { type: 'object', required: ['field0'], properties };
+    }
+
+    const provider = new MockProvider({
+      script: happyScript({
+        'produce:Contract': {
+          version: 1,
+          openapi: { openapi: '3.1.0', paths },
+          jsonSchemas,
+          generatedTypesPath: 'shared/contract/types.ts',
+          changeRequests: [],
+        },
+      }),
+    });
+
+    const orch = new Orchestrator({
+      projectRoot: root,
+      profile,
+      userBrief: USER_BRIEF,
+      runners: createRoleRunners(provider),
+      verifier: new SemanticVerifier({ provider }),
+      provider,
+      humanAvailable: false,
+      offline: true,
+      logger: silentLogger('big-contract'),
+    });
+    await orch.run();
+
+    const prompts = provider.calls.map((c) => c.lastUserMessage).join('\n');
+
+    assert.ok(prompts.includes('契约摘要'), '契约太大时必须压缩成摘要，而不是被跳过');
+    assert.match(prompts, /超出本次上下文预算/, '必须说明为什么只有摘要');
+    assert.match(prompts, /\/api\/thing0: GET → 200, POST → 201/, '摘要必须包含端点的方法与状态码');
+    assert.ok(prompts.includes('shared/contract/types.ts'), '摘要必须告诉角色该 import 哪个类型文件');
+    assert.ok(
+      prompts.includes('模型：') && prompts.includes('Model0'),
+      '摘要里必须包含模型定义',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

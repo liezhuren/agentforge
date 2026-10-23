@@ -9,6 +9,7 @@
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import {
+  checkSliceCoverage,
   execCapture,
   probeCommand,
   readJsonOrNull,
@@ -1207,10 +1208,77 @@ export const A7: Anchor = {
       }
     }
 
+    /**
+     * 6) 任务声明的契约切片是否覆盖了整个契约。
+     *
+     * 这一条是给「按任务切分契约」兜底的。切分解决了「契约太大塞不进上下文」
+     * （实测 6.6 万字符 vs 2.4 万预算，原先会被整体跳过，后端于是照自然语言
+     * 自己发明路径 —— 见 `docs/07 §O2`），但它引入了一个**新的静默失败模式**：
+     * **某个端点没有被任何任务认领**，于是永远不会被实现。
+     *
+     * 所以切分必须配一条覆盖检查，否则只是把「装不下」换成了「没人认领」。
+     * 只在**至少一个任务声明了切片**时才检查 —— 老项目没声明，不该因此被判 FAIL。
+     */
+    const taskGraphArt = ctx.store.head('TaskGraph');
+    const tgTasks = ((taskGraphArt?.content as { tasks?: Array<Record<string, unknown>> })?.tasks ??
+      []) as Array<{
+      id?: string;
+      contractPaths?: string[];
+      contractSchemas?: string[];
+    }>;
+    const declaredSlices = tgTasks
+      .filter((t) => (t.contractPaths?.length ?? 0) > 0 || (t.contractSchemas?.length ?? 0) > 0)
+      .map((t) => ({
+        ...(t.contractPaths?.length ? { paths: t.contractPaths } : {}),
+        ...(t.contractSchemas?.length ? { schemas: t.contractSchemas } : {}),
+      }));
+
+    if (declaredSlices.length > 0) {
+      const cov = checkSliceCoverage(contract, declaredSlices);
+      for (const p of cov.orphanPaths) {
+        findings.push({
+          code: 'orphan-contract-path',
+          severity: 'fail',
+          message:
+            `契约端点 ${p} 没有被任何任务认领 —— 它永远不会被实现。` +
+            '请在某个任务的 contractPaths 里认领它，或把这个端点从契约里删掉。',
+          targetRole: 'pm',
+          data: { path: p },
+        });
+      }
+      for (const p of cov.phantomPaths) {
+        findings.push({
+          code: 'phantom-contract-path',
+          severity: 'fail',
+          message: `任务声明了契约里不存在的端点 ${p} —— 任务图与契约已经漂移。`,
+          targetRole: 'pm',
+          data: { path: p },
+        });
+      }
+      for (const n of cov.orphanSchemas) {
+        findings.push({
+          code: 'orphan-contract-schema',
+          severity: 'warn',
+          message: `契约模型 ${n} 没有被任何任务声明使用（可能只是漏声明，也可能是多余模型）。`,
+          targetRole: 'pm',
+          data: { model: n },
+        });
+      }
+      for (const n of cov.phantomSchemas) {
+        findings.push({
+          code: 'phantom-contract-schema',
+          severity: 'fail',
+          message: `任务声明了契约里不存在的模型 ${n} —— 任务图与契约已经漂移。`,
+          targetRole: 'pm',
+          data: { model: n },
+        });
+      }
+    }
+
     return {
       verdict: worst(findings, 'PASS'),
       findings,
-      method: 'openapi-path coverage + generated-types existence + duplication heuristic',
+      method: 'openapi-path coverage + generated-types existence + duplication heuristic + 任务切片覆盖',
       authority: 'authoritative',
       subjects,
       contentHashes: hashes,

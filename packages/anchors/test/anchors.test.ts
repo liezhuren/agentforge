@@ -592,6 +592,132 @@ test('A7：未冻结契约 + 缺生成类型 + 端点未实现 + 前端契约漂
   }
 });
 
+test('🔴 A7：任务声明的契约切片没覆盖全部端点 → orphan-contract-path（切分不能变成静默丢失）', async () => {
+  const f = await makeFixture();
+  try {
+    const contract = {
+      version: 1,
+      openapi: { openapi: '3.1.0', paths: { '/api/a': {}, '/api/b': {}, '/api/c': {} } },
+      jsonSchemas: { Thing: { type: 'object', properties: { id: { type: 'string' } } } },
+      generatedTypesPath: 'shared/contract/types.ts',
+      changeRequests: [],
+    };
+    await f.store.put({ kind: 'Contract', producer: 'pm', content: contract });
+    const art = f.store.head('Contract')!;
+    await f.store.freeze(art.id);
+    await write(f.root, 'shared/contract/types.ts', 'export interface Thing { id: string }\n');
+
+    // 任务图只认领 /api/a 与 /api/b，还多声明了一个契约里不存在的 /api/ghost
+    await f.store.put({
+      kind: 'TaskGraph',
+      producer: 'pm',
+      content: {
+        tasks: [
+          {
+            id: 'T-01',
+            title: '实现 a 与 b',
+            owner: 'backend',
+            scope: 'api',
+            dependsOn: [],
+            requirementIds: ['R-001'],
+            deliverable: 'CodeModule',
+            acceptance: ['A4 锚点 PASS'],
+            contractPaths: ['/api/a', '/api/b', '/api/ghost'],
+            contractSchemas: ['Thing'],
+          },
+        ],
+      },
+    });
+    // 后端把 a/b 都实现了 —— 避免与「端点未实现」混在一起
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/routes.ts',
+            content:
+              "import type { Thing } from '../../../shared/contract/types.ts';\napp.get('/api/a', h);\napp.get('/api/b', h);\n",
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const codes = r.findings.map((x) => x.code);
+
+    const orphans = r.findings.filter((x) => x.code === 'orphan-contract-path');
+    assert.equal(orphans.length, 1, '只有 /api/c 没人认领');
+    assert.equal((orphans[0]!.data as { path: string }).path, '/api/c');
+    assert.equal(orphans[0]!.severity, 'fail');
+    assert.equal(orphans[0]!.targetRole, 'pm', '没人认领是规划问题，不是角色的实现问题');
+
+    const phantoms = r.findings.filter((x) => x.code === 'phantom-contract-path');
+    assert.equal(phantoms.length, 1, '任务声明了契约里没有的端点');
+    assert.equal((phantoms[0]!.data as { path: string }).path, '/api/ghost');
+    assert.ok(codes.includes('phantom-contract-path'));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('A7：任务没声明切片时不查覆盖（老项目不该因此被误判）', async () => {
+  const f = await makeFixture();
+  try {
+    const contract = {
+      version: 1,
+      openapi: { openapi: '3.1.0', paths: { '/api/a': {} } },
+      jsonSchemas: { Thing: { type: 'object', properties: { id: { type: 'string' } } } },
+      generatedTypesPath: 'shared/contract/types.ts',
+      changeRequests: [],
+    };
+    await f.store.put({ kind: 'Contract', producer: 'pm', content: contract });
+    const art = f.store.head('Contract')!;
+    await f.store.freeze(art.id);
+    await write(f.root, 'shared/contract/types.ts', 'export interface Thing { id: string }\n');
+    await f.store.put({
+      kind: 'TaskGraph',
+      producer: 'pm',
+      content: {
+        tasks: [
+          {
+            id: 'T-01',
+            title: '无切片声明',
+            owner: 'backend',
+            scope: 'api',
+            dependsOn: [],
+            requirementIds: ['R-001'],
+            deliverable: 'CodeModule',
+            acceptance: ['A4 锚点 PASS'],
+          },
+        ],
+      },
+    });
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/routes.ts',
+            content:
+              "import type { Thing } from '../../../shared/contract/types.ts';\napp.get('/api/a', h);\n",
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const codes = r.findings.map((x) => x.code);
+    assert.ok(!codes.includes('orphan-contract-path'), '没声明切片就不查覆盖');
+    assert.ok(!codes.includes('phantom-contract-path'));
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('🔴 A7：生成类型文件存在但角色手写模型没 import → contract-duplication 报 **fail**（不再只是 warn）', async () => {
   const f = await makeFixture();
   try {

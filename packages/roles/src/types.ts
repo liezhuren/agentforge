@@ -87,6 +87,16 @@ export type ProduceRequest = {
   scope?: CodeScope;
   taskId?: string;
   requirementIds?: string[];
+  /**
+   * 任务声明的**契约切片**（由 PM 在 TaskGraph 里声明，编排器透传）。
+   *
+   * 存在理由：契约整份塞进每个角色的提示词不可扩展 —— 19 条需求的契约有 6.6 万字符，
+   * 而上下文预算是 2.4 万，于是它会被整体跳过，角色只能照自然语言猜接口（`docs/07 §O2`）。
+   * 有了切片，只注入「这个任务要用的端点与模型」。
+   *
+   * 省略 = 未声明 → 退回「整份契约；放不下就用确定性摘要」，**不会静默丢弃**。
+   */
+  contractSlice?: { paths?: string[]; schemas?: string[] };
   /** 本次产出的具体指令（由编排器根据阶段与工单生成）。 */
   instruction: string;
 };

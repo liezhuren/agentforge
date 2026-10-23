@@ -18,6 +18,7 @@ import {
   type JsonSchema,
 } from '../../core/src/schemas.ts';
 import type { ArtifactKind, RoleId, WorkOrder } from '../../core/src/types.ts';
+import { digestContract } from '../../core/src/contractdigest.ts';
 // LlmRequest 属于 llm 包（原写成从 core 导入 —— 那个成员不存在，且运行时被擦除所以从不报错）
 import type { LlmRequest } from '../../llm/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
@@ -351,14 +352,45 @@ export class LlmRoleRunner implements RoleRunner {
 
     // 接口化通信的核心：只放入该角色**有权读**的工件（代码里过滤，不靠提示词约束）
     const blocks: string[] = [];
+    /** 因预算没进提示词的工件 —— **必须显式告诉模型**，不能让「没看到」变成看不见的事故。 */
+    const omitted: { id: string; size: number; left: number }[] = [];
     let budget = this.maxContextChars;
     for (const kind of readable) {
       const arts = ctx.store.heads(kind);
       for (const a of arts) {
         const role = a.producer;
         // 同一角色自己的历史产出可以看（便于版本接续），别人的只读公开发布的工件
-        const body = JSON.stringify(a.content, null, 2);
-        if (body.length > budget) continue;
+        const full = JSON.stringify(a.content, null, 2);
+        let body = full;
+
+        /**
+         * **契约是唯一「必须送到」的工件** —— 这条是被真实缺陷逼出来的。
+         *
+         * 第 14 轮实测：19 条需求的契约有 6.6 万字符，而预算是 2.4 万，
+         * 于是原来的 `if (body.length > budget) continue;` 把它**静默跳过**了：
+         * 提示词里只剩一句「【冻结契约 hash】…」，**只有 hash，没有内容**。
+         * 后端于是照自然语言自己发明了接口路径 —— A4 能过（代码自洽），
+         * A7 却报 13 个契约端点未实现。看起来像「模型不会写」，实际是**它没拿到规格**。
+         *
+         * 现在的策略：放不下就换成**确定性摘要**（只保留方法/路径/状态码与字段类型，
+         * 实测压到 4%–6%），并在提示词里说明「这是摘要」。
+         * 有任务声明的切片时按切片裁剪，没有就整份摘要。
+         */
+        if (a.kind === 'Contract' && full.length > budget) {
+          const slice = req.contractSlice;
+          const digest = digestContract(a.content as never, {
+            ...(slice ? { slice } : {}),
+          });
+          body =
+            `（完整契约 ${full.length} 字符，超出本次上下文预算 ${budget}，已压缩为可执行信息；` +
+            `字段描述、示例、pattern 等解释性内容未包含）\n` +
+            digest;
+        }
+
+        if (body.length > budget) {
+          omitted.push({ id: a.id, size: body.length, left: budget });
+          continue;
+        }
         budget -= body.length;
         blocks.push(`--- 工件 ${a.id}（${a.kind}${a.scope ? `/${a.scope}` : ''} by ${role} v${a.version}）---\n${body}`);
         if (budget <= 0) break;
@@ -371,6 +403,18 @@ export class LlmRoleRunner implements RoleRunner {
         ? `【你可读的工件（这就是你与其他角色之间的全部通信内容）】\n${blocks.join('\n\n')}`
         : `【你可读的工件】目前没有任何已发布的工件。`,
     );
+
+    // ⚠️ 省略必须是**看得见**的。原来这里是静默 `continue`，
+    // 于是「角色没看到契约」这件事在提示词和报告里都不存在 —— 属于本项目的头号反模式。
+    if (omitted.length > 0) {
+      parts.push(
+        `【因上下文预算未注入的工件 —— 你没看到它们，不代表它们不存在】\n` +
+          omitted
+            .map((o) => `- ${o.id}：${o.size} 字符，超出剩余预算 ${Math.max(0, o.left)}`)
+            .join('\n') +
+          `\n如果你的任务依赖上面的工件，请在产出里**明确说明你缺什么**，不要凭猜测编写。`,
+      );
+    }
 
     if (ctx.workOrders.length > 0) {
       parts.push(
