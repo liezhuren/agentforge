@@ -17,10 +17,12 @@ import {
   validateSchema,
   type JsonSchema,
 } from '../../core/src/schemas.ts';
-import type { ArtifactKind, RoleId, WorkOrder } from '../../core/src/types.ts';
+import type { Artifact, ArtifactKind, CodeModule, RoleId, WorkOrder } from '../../core/src/types.ts';
+import type { ArtifactStore } from '../../core/src/store.ts';
 import { digestContract } from '../../core/src/contractdigest.ts';
+import { renderModuleCards } from './modulecard.ts';
 // LlmRequest 属于 llm 包（原写成从 core 导入 —— 那个成员不存在，且运行时被擦除所以从不报错）
-import type { LlmRequest } from '../../llm/src/types.ts';
+import type { LlmContextReport, LlmRequest } from '../../llm/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
 import { silentLogger } from '../../core/src/logger.ts';
 import type { LlmProvider } from '../../llm/src/types.ts';
@@ -203,7 +205,7 @@ export class LlmRoleRunner implements RoleRunner {
     this.maxTokens = opts.maxTokens;
     this.reasoningEffort = opts.reasoningEffort;
     this.logger = opts.logger ?? silentLogger(`role:${opts.role}`);
-    this.maxContextChars = opts.maxContextChars ?? 24_000;
+    this.maxContextChars = opts.maxContextChars ?? DEFAULT_MAX_CONTEXT_CHARS;
   }
 
   async produce(req: ProduceRequest, ctx: RoleContext): Promise<ProduceResult> {
@@ -243,10 +245,38 @@ export class LlmRoleRunner implements RoleRunner {
     let repairHint: string | undefined;
     let lastError = '';
     let lastLlm: ProduceResult['llm'];
+    /**
+     * 本次调用的上下文预算。正常情况下就是 `maxContextChars`，
+     * 只有在**模型明确报「上下文超长」**时才会被减半重试（见下面的 catch）。
+     *
+     * 为什么要这条兜底：预算默认 6 万字符，正常项目远远用不到窗口上限，
+     * 但「换一个更小的模型」「换一个限制更严的网关」「项目再大一轮」都会让
+     * 请求突然超长。那时如果直接抛错，整轮 run 会因为**一次可自适应的失败**而终止 ——
+     * 这是最不划算的失败方式（已经烧掉的 token 全都白烧）。
+     */
+    let contextBudget = this.maxContextChars;
 
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
-      const request = this.buildRequest({ role: this.role, req, ctx, action, repairHint, attempt });
-      const res = await this.provider.complete(request);
+      const request = this.buildRequest({ role: this.role, req, ctx, action, repairHint, attempt, contextChars: contextBudget });
+
+      let res;
+      try {
+        res = await this.provider.complete(request);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (CONTEXT_OVERFLOW_RE.test(msg) && contextBudget >= MIN_CONTEXT_CHARS * 2) {
+          const next = Math.floor(contextBudget / 2);
+          this.logger.warn(`${this.role} 的上下文超出模型窗口，预算 ${contextBudget} → ${next} 后重试`, {
+            purpose: request.purpose,
+          });
+          contextBudget = next;
+          // 不算一次「产出失败」：这是同一份任务的同一轮，只是换了更小的上下文
+          attempt--;
+          continue;
+        }
+        throw e;
+      }
+
       lastLlm = {
         provider: res.provider,
         model: res.model,
@@ -294,13 +324,16 @@ export class LlmRoleRunner implements RoleRunner {
     action: 'produce' | 'repair';
     repairHint?: string;
     attempt: number;
+    /** 覆盖本次的上下文预算（上下文超长后减半重试用）。省略即用 `maxContextChars`。 */
+    contextChars?: number;
   }): LlmRequest {
     const { req, ctx, action, repairHint, attempt } = args;
     const schema = ARTIFACT_CONTENT_SCHEMAS[req.kind] as JsonSchema;
 
+    const rendered = this.renderContext(req, ctx, args.contextChars ?? this.maxContextChars);
     const messages: LlmRequest['messages'] = [
       { role: 'system', content: ROLE_SYSTEM_PROMPTS[this.role] },
-      { role: 'user', content: this.renderContext(req, ctx) },
+      { role: 'user', content: rendered.text },
     ];
 
     if (repairHint) {
@@ -316,13 +349,19 @@ export class LlmRoleRunner implements RoleRunner {
       schemaName: req.kind,
       temperature: this.temperature,
       attempt,
+      // 输入审计：这一行让「模型到底看到了什么」在 run 日志里可查
+      context: rendered.report,
       ...(this.model ? { model: this.model } : {}),
       ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
       ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
     };
   }
 
-  private renderContext(req: ProduceRequest, ctx: RoleContext): string {
+  private renderContext(
+    req: ProduceRequest,
+    ctx: RoleContext,
+    budget: number,
+  ): { text: string; report: LlmContextReport } {
     const readable = new Set(READ_PERMISSIONS[this.role]);
     const parts: string[] = [];
 
@@ -351,66 +390,31 @@ export class LlmRoleRunner implements RoleRunner {
     if (req.requirementIds?.length) parts.push(`【对应需求】${req.requirementIds.join(', ')}`);
 
     // 接口化通信的核心：只放入该角色**有权读**的工件（代码里过滤，不靠提示词约束）
-    const blocks: string[] = [];
-    /** 因预算没进提示词的工件 —— **必须显式告诉模型**，不能让「没看到」变成看不见的事故。 */
-    const omitted: { id: string; size: number; left: number }[] = [];
-    let budget = this.maxContextChars;
-    for (const kind of readable) {
-      const arts = ctx.store.heads(kind);
-      for (const a of arts) {
-        const role = a.producer;
-        // 同一角色自己的历史产出可以看（便于版本接续），别人的只读公开发布的工件
-        const full = JSON.stringify(a.content, null, 2);
-        let body = full;
-
-        /**
-         * **契约是唯一「必须送到」的工件** —— 这条是被真实缺陷逼出来的。
-         *
-         * 第 14 轮实测：19 条需求的契约有 6.6 万字符，而预算是 2.4 万，
-         * 于是原来的 `if (body.length > budget) continue;` 把它**静默跳过**了：
-         * 提示词里只剩一句「【冻结契约 hash】…」，**只有 hash，没有内容**。
-         * 后端于是照自然语言自己发明了接口路径 —— A4 能过（代码自洽），
-         * A7 却报 13 个契约端点未实现。看起来像「模型不会写」，实际是**它没拿到规格**。
-         *
-         * 现在的策略：放不下就换成**确定性摘要**（只保留方法/路径/状态码与字段类型，
-         * 实测压到 4%–6%），并在提示词里说明「这是摘要」。
-         * 有任务声明的切片时按切片裁剪，没有就整份摘要。
-         */
-        if (a.kind === 'Contract' && full.length > budget) {
-          const slice = req.contractSlice;
-          const digest = digestContract(a.content as never, {
-            ...(slice ? { slice } : {}),
-          });
-          body =
-            `（完整契约 ${full.length} 字符，超出本次上下文预算 ${budget}，已压缩为可执行信息；` +
-            `字段描述、示例、pattern 等解释性内容未包含）\n` +
-            digest;
-        }
-
-        if (body.length > budget) {
-          omitted.push({ id: a.id, size: body.length, left: budget });
-          continue;
-        }
-        budget -= body.length;
-        blocks.push(`--- 工件 ${a.id}（${a.kind}${a.scope ? `/${a.scope}` : ''} by ${role} v${a.version}）---\n${body}`);
-        if (budget <= 0) break;
-      }
-      if (budget <= 0) break;
-    }
+    const selection = selectContext({
+      store: ctx.store,
+      readable,
+      role: this.role,
+      req,
+      budget,
+    });
 
     parts.push(
-      blocks.length > 0
-        ? `【你可读的工件（这就是你与其他角色之间的全部通信内容）】\n${blocks.join('\n\n')}`
+      selection.blocks.length > 0
+        ? `【你可读的工件（这就是你与其他角色之间的全部通信内容）】\n${selection.blocks.join('\n\n')}`
         : `【你可读的工件】目前没有任何已发布的工件。`,
     );
 
-    // ⚠️ 省略必须是**看得见**的。原来这里是静默 `continue`，
-    // 于是「角色没看到契约」这件事在提示词和报告里都不存在 —— 属于本项目的头号反模式。
-    if (omitted.length > 0) {
+    // ⚠️ 省略必须是**看得见**的。
+    //
+    // 但只「告诉模型」不够 —— 第 21 轮实测证明模型会**无视**这条提示继续盲写
+    // （它没有别的选择：不给规格它也只能写）。所以这件事同时被记进 run 日志
+    // （`LlmContextReport`），让「输入被饿死」变成一个**可查的事故**，
+    // 而不是一句可能被忽略的提示词。
+    if (selection.omitted.length > 0) {
       parts.push(
         `【因上下文预算未注入的工件 —— 你没看到它们，不代表它们不存在】\n` +
-          omitted
-            .map((o) => `- ${o.id}：${o.size} 字符，超出剩余预算 ${Math.max(0, o.left)}`)
+          selection.omitted
+            .map((o) => `- ${o.id}（${o.kind}）：${o.chars} 字符，${o.reason === 'tier-cap' ? '所属分层的额度已用完' : '剩余预算放不下'}`)
             .join('\n') +
           `\n如果你的任务依赖上面的工件，请在产出里**明确说明你缺什么**，不要凭猜测编写。`,
       );
@@ -428,11 +432,301 @@ export class LlmRoleRunner implements RoleRunner {
     parts.push(`【本次任务】\n${req.instruction}`);
     parts.push(`【输出要求】严格输出符合 ${req.kind} schema 的单个 JSON 对象，不要任何额外文字。`);
 
-    return parts.join('\n\n');
+    return { text: parts.join('\n\n'), report: selection.report };
   }
 }
 
-/** 为五个角色各建一个运行器（共用一个 Provider）。 */
+/**
+ * 上下文预算的默认值。
+ *
+ * ── 这个数字的两次修正（都是被真实失败逼出来的）───────────────────
+ *
+ * 第一次（第 14 轮）：6.6 万字符的契约被整体跳过 → 补了「放不下就压成摘要」。
+ *
+ * 第二次（第 21 轮，`docs/07 §R`）：摘要修好之后，**预算的分配方式**仍然是主角。
+ * 24,000 字符被「需求 + PRD + 任务图」吃掉 22,824（95%），
+ * 于是契约只能塞进摘要，**全部代码模块与全部测试报告一件都进不去**：
+ * 后端在不知道别人导出了什么的情况下写分发逻辑（28/39 测试挂 501 的成因），
+ * 在看不到测试报告的情况下修 bug（6 轮不收敛的成因）。
+ *
+ * ── 为什么是 6 万，而不是「干脆给 60 万」──────────────────────────
+ *
+ * 提高预算只能治**表面**，而且会和这个项目的初衷冲突：AgentForge 的价值就在于
+ * **把复杂任务切小、降低单个模型面对的上下文压力**，模型之间的信息传递**只传接口**。
+ * 把全部源码堆进一个上下文，等于把多角色系统退化成单一大上下文 ——
+ * 切分就白做了，而且下次项目更大时它会再次溢出。
+ *
+ * 所以正确的修法是**两条一起**：
+ *   ① 预算从 24,000 提到 60,000（约 2.8 万 token，仍然是个「小任务」的量级）
+ *   ② 代码类工件改成**接口卡**（`modulecard.ts`）：只给导出签名，不给实现。
+ *      11 个模块的全部签名约 5 千字符，而它们的全文是 20 万字符 —— 差 40 倍。
+ *
+ * 前者保证「装得下该装的东西」，后者保证「该装的东西本来就不大」。
+ * 只做前者会不断膨胀；只做后者会连契约都挤不进去。
+ */
+export const DEFAULT_MAX_CONTEXT_CHARS = 60_000;
+
+/**
+ * 预算的下限：减半重试不会把上下文缩到「等于没给」。
+ * 低于这个值再退，就只剩一句「你自己猜吧」—— 那时如实失败比假装在干活好。
+ */
+const MIN_CONTEXT_CHARS = 20_000;
+
+/**
+ * 「这次请求超出了模型上下文窗口」的错误特征。
+ *
+ * 各家网关的措辞不统一（OpenAI / DeepSeek / 各种中转），所以按**语义特征**匹配
+ * 而不是按固定字符串。匹配失败也不要紧 —— 最坏情况是这次 run 失败并如实报错，
+ * 而不是静默产出垃圾。
+ */
+const CONTEXT_OVERFLOW_RE =
+  /context length|context_length|maximum context|too many tokens|token limit|reduce the length|prompt is too long|context window|超出.{0,6}上下文|上下文.{0,6}(超长|过长|超过)|内容过长/i;
+
+/** 分层配额：一层一类工件，**先到先得只在本层内成立**。 */
+type ContextTier = {
+  label: string;
+  kinds: ArtifactKind[];
+  /** 占总预算的比例。 */
+  share: number;
+  /** 下限（字符）：预算很小时也要保证这一层能装下关键工件。 */
+  min: number;
+  /**
+   * `full`（默认）：注入工件正文。
+   * `cards`：**不注入正文**，只注入该层模块的导出签名（见 `modulecard.ts`）。
+   * 这是「模型之间的信息传递只传接口」这条规则在代码层的一次落地。
+   */
+  mode?: 'full' | 'cards';
+};
+
+/**
+ * ⚠️ 分层顺序本身就是设计决定，不是实现细节。
+ *
+ * 旧的实现是「按 `READ_PERMISSIONS` 的顺序把所有工件塞进同一个池子」，
+ * 而那个顺序恰好把**体积最大、最不可压缩**的散文排在最前面
+ * （Requirement / PRD / TaskGraph），把**最关键的**（Contract / TestReport）
+ * 排在最后。于是预算在到达关键工件之前就耗尽了。
+ *
+ * 分层的理由是**失效后果不同**：
+ *   - 没有契约 → 接口必然写错（无法事后补救，只能返工）
+ *   - 没有测试报告 → 修复是盲修（6 轮不收敛的成因）
+ *   - 不知道别人导出了什么 → 不可能接线（28/39 测试挂 501 的成因）
+ *   - 没有 PRD 原文 → 影响表达质量，不影响正确性（且 TaskGraph 与它高度重复）
+ *
+ * ⚠️ 注意「知道别人导出了什么」和「读到别人的实现」是**两件事**，
+ * 它们被刻意拆成 `模块接口`（cards）与 `代码全文`（full）两层：
+ * 前三层保证**接口与事实**永远在，第四层是**尽力而为**。
+ * 这才是「切分小任务 + 只传接口」该有的形状 ——
+ * 而不是把所有源码堆进一个大上下文（那等于取消了切分本身的意义）。
+ */
+function tiersFor(role: RoleId): ContextTier[] {
+  const contract: ContextTier = { label: '规格', kinds: ['Contract'], share: 0.15, min: 4_000 };
+  const facts: ContextTier = { label: '执行事实', kinds: ['TestReport', 'Directive'], share: 0.1, min: 3_000 };
+  const cards: ContextTier = {
+    label: '模块接口（只给导出签名，不给实现）',
+    kinds: ['CodeModule', 'TestSuite'],
+    share: 0.25,
+    min: 6_000,
+    mode: 'cards',
+  };
+  const bodies: ContextTier = { label: '代码全文（尽力而为）', kinds: ['CodeModule'], share: 0.25, min: 0 };
+  const prose: ContextTier = {
+    label: '需求与计划',
+    kinds: ['Requirement', 'PRD', 'TaskGraph', 'DebtRecord', 'AnchoredReview'],
+    share: 0.25,
+    min: 4_000,
+  };
+
+  switch (role) {
+    case 'pm':
+    case 'host':
+      // 这两者审规格与事实；通读实现不是它们的活
+      return [contract, facts, { ...cards, share: 0.2 }, { ...bodies, share: 0.15 }, { ...prose, share: 0.4 }];
+    case 'test':
+      // 测试最需要「接口长什么样」与「之前挂了什么」，代码全文最不重要
+      return [
+        contract,
+        { ...facts, share: 0.15 },
+        { ...cards, share: 0.35 },
+        { ...bodies, share: 0.15 },
+        { ...prose, share: 0.2 },
+      ];
+    default:
+      // backend / frontend
+      return [contract, facts, cards, bodies, prose];
+  }
+}
+
+export type ContextSelection = {
+  blocks: string[];
+  omitted: LlmContextReport['omitted'];
+  report: LlmContextReport;
+};
+
+/**
+ * 把工件渲染成提示词里的正文。
+ *
+ * **为什么要单独一个函数**：原来是 `JSON.stringify(content, null, 2)`。
+ * 对代码类工件这是双重浪费 ——
+ *   ① 2 空格缩进把体积放大一截（散文类工件里接近一半字符是缩进和换行）；
+ *   ② 更糟的是**代码被 JSON 转义成了一行**（`\n` → `\\n`、引号 → `\"`），
+ *      模型既难读，tokenizer 也更费（转义序列往往吃掉独立 token）。
+ *
+ * 所以：代码文件按**原文**贴出来（用 `<<<FILE path>>>` 分隔，不用 Markdown 围栏 ——
+ * 代码里可能出现 ``` ），其余字段仍用紧凑 JSON。这不是性能优化，
+ * 是为了让「同 100k 字符」装下更多真实信息。
+ */
+export function renderArtifactBody(content: unknown): string {
+  const maybe = content as { files?: unknown } | null;
+  const files = maybe?.files;
+  if (Array.isArray(files) && files.length > 0) {
+    const ok = files.every(
+      (f) => f && typeof f === 'object' && typeof (f as { path?: unknown }).path === 'string' && typeof (f as { content?: unknown }).content === 'string',
+    );
+    if (ok) {
+      const rest: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(content as Record<string, unknown>)) if (k !== 'files') rest[k] = v;
+      const head = Object.keys(rest).length > 0 ? `${JSON.stringify(rest)}\n` : '';
+      const body = (files as Array<{ path: string; content: string }>)
+        .map((f) => `<<<FILE ${f.path}>>>\n${f.content}\n<<<END FILE>>>`)
+        .join('\n');
+      return head + body;
+    }
+  }
+  return JSON.stringify(content) ?? 'null';
+}
+
+/**
+ * 按分层配额挑选要注入的工件。
+ *
+ * 导出是为了让「预算花在哪」这件事**可以被单元测试钉住** ——
+ * 这条逻辑的 bug 曾经在系统里静默存在了 20 轮，因为它只影响提示词内容，
+ * 不产生任何失败的测试。
+ */
+export function selectContext(args: {
+  store: ArtifactStore;
+  readable: Set<ArtifactKind>;
+  role: RoleId;
+  req: ProduceRequest;
+  budget: number;
+}): ContextSelection {
+  const { store, readable, role, req, budget } = args;
+  const blocks: string[] = [];
+  const omitted: LlmContextReport['omitted'] = [];
+  const injected: LlmContextReport['injected'] = [];
+
+  let remaining = budget;
+  let carried = 0;
+
+  for (const tier of tiersFor(role)) {
+    if (remaining <= 0) {
+      // 预算彻底用完：本层全部记为「放不下」，而不是悄悄消失
+      for (const kind of tier.kinds) {
+        if (!readable.has(kind)) continue;
+        for (const a of store.heads(kind)) {
+          const chars = tier.mode === 'cards' ? 0 : renderArtifactBody(a.content).length;
+          omitted.push({ id: a.id, kind: a.kind, chars, reason: 'no-space' });
+        }
+      }
+      continue;
+    }
+
+    const cap = Math.max(tier.min, Math.floor(budget * tier.share));
+    let tierLeft = Math.min(remaining, cap + carried);
+
+    // 本层内的排序：先按 kind 的声明顺序，再让「同 scope」优先，最后新的优先。
+    // 同 scope 优先是给修复用的：后端返工时要看的是 api 代码，不是前端页面。
+    const kindRank = new Map(tier.kinds.map((k, i) => [k, i]));
+    const candidates: Artifact[] = [];
+    for (const kind of tier.kinds) {
+      if (!readable.has(kind)) continue;
+      candidates.push(...store.heads(kind));
+    }
+    candidates.sort((a, b) => {
+      const ka = kindRank.get(a.kind) ?? 99;
+      const kb = kindRank.get(b.kind) ?? 99;
+      if (ka !== kb) return ka - kb;
+      const sa = req.scope && a.scope === req.scope ? 0 : 1;
+      const sb = req.scope && b.scope === req.scope ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
+
+    for (const a of candidates) {
+      /**
+       * 「接口层」：不给实现，只给导出签名。
+       *
+       * 这一层是**保证送达**的 —— 它便宜（11 个模块的全部签名约 5 千字符，
+       * 而它们的全文是 20 万字符），而缺了它「接线」在物理上不可能。
+       * 它取代了原先「要么塞全文、要么什么都看不到」的二元选择。
+       */
+      if (tier.mode === 'cards') {
+        const files = ((a.content as CodeModule).files ?? []).map((f) => ({ path: f.path, content: f.content }));
+        const card = renderModuleCards([{ id: a.id, version: a.version, files }], { maxTotalChars: tierLeft });
+        if (card.length === 0) continue;
+        if (card.length > tierLeft) {
+          omitted.push({ id: a.id, kind: a.kind, chars: card.length, reason: 'tier-cap' });
+          continue;
+        }
+        tierLeft -= card.length;
+        remaining -= card.length;
+        injected.push({ id: a.id, kind: a.kind, chars: card.length, card: true });
+        blocks.push(`--- 接口 ${a.id}（${a.kind}${a.scope ? `/${a.scope}` : ''} by ${a.producer} v${a.version}）---\n${card}`);
+        continue;
+      }
+
+      let body = renderArtifactBody(a.content);
+      let digest: true | undefined;
+
+      /**
+       * **契约是唯一「必须送到」的工件。**
+       *
+       * 第 14 轮：6.6 万字符的契约被整体跳过，提示词里只剩一句 hash，
+       * 后端于是照自然语言发明接口路径（A4 过、A7 报 13 个端点未实现）。
+       * 策略：放不下就换成确定性摘要（实测压到 4%–6%），并说明这是摘要。
+       * 有任务声明的切片时按切片裁剪，没有就整份摘要。
+       */
+      if (a.kind === 'Contract' && body.length > tierLeft) {
+        const slice = req.contractSlice;
+        const digestText = digestContract(a.content as never, { ...(slice ? { slice } : {}) });
+        const note =
+          `（完整契约 ${body.length} 字符，超出本次上下文预算 ${tierLeft} 字符（该层可用额度），已压缩为可执行信息；` +
+          `字段描述、示例、pattern 等解释性内容未包含）\n`;
+        if (note.length + digestText.length <= tierLeft) {
+          body = note + digestText;
+          digest = true;
+        }
+      }
+
+      if (body.length > tierLeft) {
+        omitted.push({
+          id: a.id,
+          kind: a.kind,
+          chars: body.length,
+          // 放不进本层，但总预算还有富余 → 是分层额度的问题，不是预算不够
+          reason: body.length <= remaining ? 'tier-cap' : 'no-space',
+        });
+        continue;
+      }
+
+      tierLeft -= body.length;
+      remaining -= body.length;
+      injected.push({ id: a.id, kind: a.kind, chars: body.length, ...(digest ? { digest } : {}) });
+      blocks.push(
+        `--- 工件 ${a.id}（${a.kind}${a.scope ? `/${a.scope}` : ''} by ${a.producer} v${a.version}）---\n${body}`,
+      );
+    }
+
+    carried = Math.max(0, tierLeft);
+  }
+
+  return {
+    blocks,
+    omitted,
+    report: { budget, used: budget - remaining, injected, omitted },
+  };
+}
+
+
 export function createRoleRunners(
   provider: LlmProvider,
   opts: { logger?: Logger; model?: string } = {},
@@ -468,7 +762,10 @@ export function createBoundRoleRunners(
   opts: {
     logger?: Logger;
     maxAttempts?: number;
-    /** 上下文预算（字符）。见 `ForgeConfig.context` 的说明；省略即 24000。 */
+    /**
+     * 上下文预算（字符）。见 `ForgeConfig.context` 的说明；
+     * 省略即 `DEFAULT_MAX_CONTEXT_CHARS`（100000，第 21 轮实测后从 24000 提高）。
+     */
     maxContextChars?: number;
   } = {},
 ): Record<RoleId, LlmRoleRunner> {

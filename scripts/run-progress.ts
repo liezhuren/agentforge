@@ -102,6 +102,39 @@ export function progressOf(ws: string): string[] {
       (Object.keys(byRole).length ? `  [${Object.entries(byRole).map(([k, v]) => `${k} ${v}`).join(' / ')}]` : ''),
   );
 
+  /**
+   * 输入审计：最近一次调用**到底看到了什么**。
+   *
+   * 这一行是第 21 轮那次事故的直接产物（`docs/07 §R`）：当时输入恒定 ~10.6k token、
+   * 契约与全部代码都被预算挤掉，而这件事在 run 日志里**查不到**，
+   * 于是 20 轮里所有归因都落在「模型写得差」上。
+   *
+   * 现在把「预算 / 已用 / 注入几个 / 丢掉几个」直接印出来 ——
+   * 「模型是不是被饿着在写」应该一眼可见，而不是靠复算。
+   */
+  const withCtx = [...recs].reverse().find((r) => r['context']);
+  if (withCtx) {
+    const c = withCtx['context'] as {
+      budget: number;
+      used: number;
+      injected: Array<{ id: string; kind: string; card?: true; digest?: true }>;
+      omitted: Array<{ id: string; kind: string; chars: number; reason: string }>;
+    };
+    const pct = c.budget > 0 ? (c.used / c.budget) * 100 : 0;
+    out.push(
+      `上下文：${c.used.toLocaleString()} / ${c.budget.toLocaleString()} 字符（${pct.toFixed(0)}%）` +
+        `  注入 ${c.injected.length} 个·丢弃 ${c.omitted.length} 个` +
+        `  [${withCtx['role']} · ${withCtx['purpose']}]`,
+    );
+    const cards = c.injected.filter((x) => x.card).length;
+    const digests = c.injected.filter((x) => x.digest).length;
+    if (cards > 0 || digests > 0) out.push(`  其中接口卡 ${cards} 个、契约摘要 ${digests} 个`);
+    if (c.omitted.length > 0) {
+      const shown = c.omitted.slice(0, 4).map((o) => `${o.id}(${o.chars}·${o.reason})`);
+      out.push(`  未注入：${shown.join('、')}${c.omitted.length > 4 ? ` …共 ${c.omitted.length} 个` : ''}`);
+    }
+  }
+
   // Gate 序列
   const gates = decisions.filter((d) => d['kind'] === 'gate.evaluated');
   if (gates.length === 0) {

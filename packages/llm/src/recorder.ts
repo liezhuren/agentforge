@@ -95,6 +95,8 @@ export class JsonlRunRecorder {
         ...(args.response.finishReason ? { finishReason: args.response.finishReason } : {}),
       },
       latencyMs: args.response.latencyMs,
+      // 输入审计：注入了什么、丢了什么。见 LlmContextReport 的说明。
+      ...(args.request.context ? { context: args.request.context } : {}),
     };
     await appendFile(this.file, JSON.stringify(rec) + '\n', 'utf8');
     return rec;
@@ -118,6 +120,7 @@ export class JsonlRunRecorder {
       ...(args.request.schemaName !== undefined ? { schemaName: args.request.schemaName } : {}),
       response: { text: '', parseError: args.error },
       latencyMs: 0,
+      ...(args.request.context ? { context: args.request.context } : {}),
     };
     await appendFile(this.file, JSON.stringify(rec) + '\n', 'utf8');
   }

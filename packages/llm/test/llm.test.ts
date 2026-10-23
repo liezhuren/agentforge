@@ -1227,7 +1227,7 @@ test('配置：context.maxContextChars 太小或不是整数时明确报错', ()
   assert.throws(() => parseConfig({ ...base, context: 'big' }), /context 必须是对象/);
 });
 
-test('配置：省略 context 时不报错，且默认值由运行器提供（24000）', () => {
+test('配置：省略 context 时不报错，且默认值由运行器提供（不写进配置文件）', () => {
   const cfg = parseConfig({
     version: 1,
     providers: { a: { kind: 'openai-compat', baseUrl: 'http://x/v1', defaultModel: 'm' } },

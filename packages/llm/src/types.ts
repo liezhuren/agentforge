@@ -31,6 +31,38 @@ export type LlmMessage = {
   content: string;
 };
 
+/**
+ * **本次调用「模型到底看到了什么」。**
+ *
+ * 这个类型是第 21 轮（命题测试复算）逼出来的，不是设计出来的。
+ *
+ * 当时的现象：一次 run 跑了 75 分钟、30 次调用，输入**始终停在 ~10.6k token**，
+ * 而项目从 0 行长到 4443 行。查了两小时才发现：24,000 字符的上下文池被
+ * 「需求 + PRD + 任务图」三件散文吃掉了 95%，契约、所有代码模块、所有测试报告
+ * 一件都没进去。于是后端在**看不到契约**的情况下写接口，在**看不到别人代码**的
+ * 情况下写分发逻辑，在**看不到测试失败事实**的情况下修 bug。
+ *
+ * 而这一切在系统里**完全不可见**：录制只存了 `promptHash`，没有存「注入了什么、
+ * 丢了什么」。归因于是全部落在「模型写得差」上，连跑 20 轮没人怀疑过输入。
+ *
+ * 所以：**输入完整性必须和输出质量一样被记录**。
+ * 不记录它，任何「为什么它就是做不对」的分析都只能是猜。
+ */
+export type LlmContextReport = {
+  /** 本次的字符预算。 */
+  budget: number;
+  /** 实际注入的字符数（不含本报告自身的说明文字）。 */
+  used: number;
+  /** 注入了什么。`digest` = 压缩后的契约摘要；`card` = 只给了导出签名（没给实现）。 */
+  injected: Array<{ id: string; kind: string; chars: number; digest?: true; card?: true }>;
+  /**
+   * 没注入什么、为什么。
+   * `no-space`：连所属配额都放不下；`tier-cap`：所属分层的额度已用完。
+   * 区分这两种很关键 —— 前者要加大预算，后者要调分层比例。
+   */
+  omitted: Array<{ id: string; kind: string; chars: number; reason: 'no-space' | 'tier-cap' }>;
+};
+
 export type LlmRequest = {
   /** 发起请求的角色。 */
   role: LlmRoleName;
@@ -50,6 +82,8 @@ export type LlmRequest = {
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** 结构化重试次数（由调用方在 schema 校验失败后递增）。 */
   attempt?: number;
+  /** 本次注入/丢弃了哪些工件 —— 只用于事后审计，不参与模型调用。 */
+  context?: LlmContextReport;
 };
 
 export type LlmUsage = {
@@ -118,6 +152,11 @@ export type LlmCallRecord = {
     finishReason?: string;
   };
   latencyMs: number;
+  /**
+   * 这次调用的输入里**实际注入了哪些工件、丢了哪些**。
+   * 见 `LlmContextReport` 上那段说明：这是「为什么它老是做不对」唯一可审计的证据。
+   */
+  context?: LlmContextReport;
 };
 
 export type { JsonSchema };
