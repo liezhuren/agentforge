@@ -99,6 +99,28 @@ export class DecisionLog {
     return this.entries.length > 0 ? this.entries[this.entries.length - 1].hash : GENESIS_HASH;
   }
 
+  /**
+   * 文件写入的串行链。
+   *
+   * ## 为什么必须有它（一个真实且偶发的断链）
+   *
+   * `append()` 的语义是「先 push 到内存（此时 seq 已定），再写文件」。
+   * 而调用方**并不总是 await** —— 编排器里有多处 `void this.log?.append(...)`。
+   * 两个 append 并发时，各自 `await appendFile()` 的完成顺序不受控，
+   * 于是**文件里的行序可能和 seq 不一致**：seq 16 先落盘、seq 15 后落盘。
+   *
+   * `verify()` 是按文件行序逐条比对 seq 的，于是报
+   * 「序号不连续（期望 15）」—— 而日志内容其实一条没丢、一条没改。
+   *
+   * 实测：这条断链是**偶发**的（同一个 e2e 用例跑 3 次，1 次失败）。
+   * 偶发比稳定失败更麻烦：它会让 CI 与现场演示随机翻车，而且一看到「哈希链断了」
+   * 第一反应会去查「是不是被篡改了」—— 方向完全错。
+   *
+   * 修法：把文件写入串成一条 Promise 链，保证**落盘顺序 === seq 顺序**。
+   * 单次写入失败不会卡死后续（链上做一次 settle），但会抛给当次调用方。
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
+
   async append(kind: DecisionKind, payload: unknown): Promise<DecisionEntry> {
     const seq = this.entries.length + 1;
     const at = new Date().toISOString();
@@ -106,7 +128,13 @@ export class DecisionLog {
     const body = { seq, at, kind, payload };
     const entry: DecisionEntry = { ...body, prevHash, hash: entryHash(prevHash, body) };
     this.entries.push(entry);
-    await appendFile(this.path, JSON.stringify(entry) + '\n', 'utf8');
+
+    const line = JSON.stringify(entry) + '\n';
+    const prev = this.writeChain.catch(() => undefined);
+    const run = prev.then(() => appendFile(this.path, line, 'utf8'));
+    // 链上只保留「已 settle」的结果：一次写失败不能让后续 append 全部卡住。
+    this.writeChain = run.catch(() => undefined);
+    await run;
     return entry;
   }
 
