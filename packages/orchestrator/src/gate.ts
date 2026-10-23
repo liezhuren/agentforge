@@ -739,6 +739,37 @@ export function acceptanceFor(finding: { code: string; file?: string; line?: num
       return `把产出路径 ${loc} 改成项目工作区内的相对路径（不得越出项目根）`;
     case 'undeclared-endpoint':
       return `修正 ${loc} 中对未声明端点 ${String(d.called)} 的调用，或走契约变更流程，使 A7 锚点 PASS`;
+    /**
+     * A7 的「切片覆盖」四条。
+     *
+     * 为什么必须给显式措辞（cb-8 实测）：这四条原来全落到 `default` 分支，
+     * 于是 PM 收到的工单是「修复 项目 的 orphan-contract-path 问题，使 A7 锚点 PASS」——
+     * **一句不可执行的话**。PM 连修两轮都没改变任何东西，最后带债通过，
+     * 而真实原因只是「有一个端点没被任何任务认领」。
+     *
+     * 这次修法的教训不是「再加几个 case」：**凡是有专门 code 的失败，都必须有
+     * 专门的验收条件**。落到 default 就等于默认「修不好也能凑合」，
+     * 而 `default` 的措辞本身在告诉模型「我也不知道该改什么」。
+     */
+    case 'orphan-contract-path':
+      return (
+        `把契约端点 ${String(d.path)} 认领进**某个任务**的 contractPaths（否则它永远不会被实现），` +
+        '并确认该任务真的要实现它；注意 catch-all 端点在契约里同样需要被认领。使 A7 锚点 PASS'
+      );
+    case 'phantom-contract-path':
+      return (
+        `任务里声明的端点 ${String(d.path)} 在契约中不存在 —— ` +
+        '要么把它从任务的 contractPaths 里删掉，要么先走契约变更流程把它加进契约。使 A7 锚点 PASS'
+      );
+    case 'orphan-contract-schema':
+      return `把契约模型 ${String(d.model)} 声明进某个任务的 contractSchemas（它目前没有被任何任务使用），使 A7 锚点的该条 WARN 消除`;
+    case 'phantom-contract-schema':
+      return `任务声明的模型 ${String(d.model)} 在契约里不存在 —— 从任务的 contractSchemas 里删掉它，或走契约变更流程。使 A7 锚点 PASS`;
+    case 'contract-non-operation-path':
+      return (
+        `契约 paths 里的 "${String(d.path)}" 不是以 / 开头的端点键（通常是把 components 之类的` +
+        '结构性字段写进了 paths）—— 把它移到正确的层级，使 A7 的该条 WARN 消除'
+      );
     default:
       return `修复 ${loc} 的 ${finding.code} 问题，使 ${anchorId} 锚点 PASS`;
   }

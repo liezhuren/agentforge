@@ -563,6 +563,20 @@ export type ContextSelection = {
 };
 
 /**
+ * 接口卡前面的那段说明。
+ *
+ * 写它不是礼貌，是**防一个特定误解**：模型可能把「接口存在」读成「实现存在」，
+ * 于是不去调用别人的模块 —— 而那种失败的表现和「信息饥饿」一模一样
+ * （模块导出了、没人调用），根因却完全不同。
+ */
+const CARD_HEADER = [
+  '下面是**其他模块导出的签名**，不是它们的完整代码。这些模块由别的任务实现。',
+  '你要做的是：在自己的模块里 **import 并调用**它们，构成完整的请求链路；',
+  '**不要重复实现它们已有的功能**，也不要把「签名存在」当成「已经接好了」。',
+  '如果你负责的是入口/分发逻辑，必须真的调用这些函数，而不是回一个占位响应（如 501）。',
+].join('\n');
+
+/**
  * 把工件渲染成提示词里的正文。
  *
  * **为什么要单独一个函数**：原来是 `JSON.stringify(content, null, 2)`。
@@ -616,6 +630,7 @@ export function selectContext(args: {
 
   let remaining = budget;
   let carried = 0;
+  let cardsHeaderEmitted = false;
 
   for (const tier of tiersFor(role)) {
     if (remaining <= 0) {
@@ -661,12 +676,29 @@ export function selectContext(args: {
        */
       if (tier.mode === 'cards') {
         const files = ((a.content as CodeModule).files ?? []).map((f) => ({ path: f.path, content: f.content }));
-        const card = renderModuleCards([{ id: a.id, version: a.version, files }], { maxTotalChars: tierLeft });
+        /**
+         * ⚠️ 第一张卡前面必须带一段说明：「这是签名，不是实现」。
+         *
+         * 这个坑是**预判**出来的（`docs/competition/09 §F9`），不是踩出来的 ——
+         * 但它的危害足够大：如果模型把「接口存在」读成「实现存在」，
+         * 它就会**不去调用**别人的模块，而且不会报错 ——
+         * 于是表现和「信息饥饿」一模一样（模块导出了、没人调用），
+         * 但根因完全不同，修法也完全不同。
+         *
+         * 说明文字**算进第一张卡的长度**，而不是单独一块：
+         * 报告里 `used` 必须等于所有 `injected` 之和，
+         * 否则「这些字符花在哪了」就又要靠猜了（那是这一整轮的教训）。
+         */
+        const withHeader = !cardsHeaderEmitted;
+        const allowance = withHeader ? Math.max(0, tierLeft - CARD_HEADER.length - 2) : tierLeft;
+        let card = renderModuleCards([{ id: a.id, version: a.version, files }], { maxTotalChars: allowance });
         if (card.length === 0) continue;
+        if (withHeader) card = `${CARD_HEADER}\n\n${card}`;
         if (card.length > tierLeft) {
           omitted.push({ id: a.id, kind: a.kind, chars: card.length, reason: 'tier-cap' });
           continue;
         }
+        cardsHeaderEmitted = true;
         tierLeft -= card.length;
         remaining -= card.length;
         injected.push({ id: a.id, kind: a.kind, chars: card.length, card: true });

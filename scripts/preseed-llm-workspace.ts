@@ -11,7 +11,14 @@
  *
  * 刻意**不放任何应用代码** —— 代码必须由 LLM 生成，否则这次运行说明不了任何问题。
  *
- * 运行：node scripts/preseed-llm-workspace.ts [工作区路径]
+ * 运行：node scripts/preseed-llm-workspace.ts <工作区路径> [端口，默认 8787]
+ *
+ * ⚠️ **端口必须显式给**，当你要并行跑多个 run 时。A6（运行时探针）是拿
+ * `agentforge.healthUrl` 直接连的，两个 run 共用 8787 的话，A6 会探到**别人的服务**——
+ * 那是一个假绿灯，比 SKIPPED 更糟（它会让人以为这个 run 的服务真的起来了）。
+ *
+ * 顺带记一笔：第一次并行实验时工作区忘了预置，于是 A4/A5/A6 全 SKIPPED，
+ * 那一轮几乎什么都没验证。预置是**运行的一部分**，不是可选项。
  */
 
 import { join } from 'node:path';
@@ -20,8 +27,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { ensureToolchain } from '../packages/orchestrator/src/real-app-project.ts';
 
 const root = process.argv[2];
+const port = Number(process.argv[3] ?? 8787);
 if (!root) {
-  console.error('用法：node scripts/preseed-llm-workspace.ts <工作区路径>');
+  console.error('用法：node scripts/preseed-llm-workspace.ts <工作区路径> [端口]');
+  process.exit(1);
+}
+if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+  console.error(`端口不合法：${process.argv[3]}`);
   process.exit(1);
 }
 
@@ -50,7 +62,7 @@ await w(
       // 显式声明健康检查地址，让 A6（运行时探针）能真的执行。
       // 不声明的话 A6 只能报 SKIPPED —— 引擎刻意不猜端口（猜错会探到别的进程）。
       agentforge: {
-        healthUrl: 'http://127.0.0.1:8787/health',
+        healthUrl: `http://127.0.0.1:${port}/health`,
         // 环境约束：由**项目**声明，引擎会原样注入每个角色的提示词。
         // 这两条都是真实 LLM run 里用血换来的（docs/07 §L5 / §L8）：
         // 模型写的代码本身没问题，是环境的限制没被传达，结果锚点判 FAIL、
