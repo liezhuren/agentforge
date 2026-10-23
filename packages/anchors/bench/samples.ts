@@ -713,6 +713,158 @@ export const SAMPLES: BenchSample[] = [
     },
   },
 
+  {
+    id: 'A7-09-unwired-handler',
+    group: 'A7 契约一致性',
+    title: '【对抗】端点字符串在、处理器也写了，但从来没有被调用',
+    injection:
+      'app.ts 的路由表里写着 /api/tasks（老检查因此判「已实现」），分发逻辑对受保护路径直接 501；' +
+      'tasks.ts 导出了 handleTasksRoute，但整个后端没有一处调用它。' +
+      '这条样本专门用来暴露 A7 的第二个弱点：**子串匹配只能证明文字存在，不能证明路径可达**',
+    anchors: ['A7'],
+    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'FAIL' },
+    build: async (ctx) => {
+      await ctx.pkg({ name: 'bench' });
+      const id = await ctx.artifact({ kind: 'Contract', producer: 'pm', content: GOOD_CONTRACT });
+      await ctx.store.freeze(id);
+      await ctx.file('shared/contract/types.ts', GENERATED_TYPES);
+      await ctx.artifact({
+        kind: 'CodeModule',
+        producer: 'backend',
+        scope: 'api',
+        content: {
+          files: [
+            {
+              path: 'src/api/app.ts',
+              content: [
+                "import type { Task } from '../../shared/contract/types.ts';",
+                "import { handleTasksRoute } from './tasks.ts';",
+                '',
+                "const ROUTES = ['/api/tasks'];",
+                '',
+                'export function handleRequest(req: unknown, res: { status: (n: number) => void }, path: string): void {',
+                '  if (ROUTES.includes(path)) {',
+                "    res.status(501);",
+                '    return;',
+                '  }',
+                '  res.status(404);',
+                '}',
+                '',
+                '// 入口本身是接好的：只注入「业务模块没接线」这一个缺陷',
+                'export const server = boot(handleRequest);',
+                '',
+                'export const tasks: Task[] = [];',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'src/api/tasks.ts',
+              content: [
+                "import type { Task } from '../../shared/contract/types.ts';",
+                '',
+                'export function handleTasksRoute(): Task[] {',
+                '  return [];',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      });
+    },
+  },
+  {
+    id: 'A7-10-stub-endpoint',
+    group: 'A7 契约一致性',
+    title: '【对抗】端点的实现就是一句 501 占位',
+    injection:
+      "分发逻辑里写着 sendJson(res, 501, { error: 'not implemented yet' }) —— " +
+      '模型自己在代码里承认没实现。把它当成「已实现」是纯自欺',
+    anchors: ['A7'],
+    expect: { kind: 'detect', anchorId: 'A7', atLeast: 'FAIL' },
+    build: async (ctx) => {
+      await ctx.pkg({ name: 'bench' });
+      const id = await ctx.artifact({ kind: 'Contract', producer: 'pm', content: GOOD_CONTRACT });
+      await ctx.store.freeze(id);
+      await ctx.file('shared/contract/types.ts', GENERATED_TYPES);
+      await ctx.artifact({
+        kind: 'CodeModule',
+        producer: 'backend',
+        scope: 'api',
+        content: {
+          files: [
+            {
+              path: 'src/api/routes.ts',
+              content: [
+                "import type { Task } from '../../shared/contract/types.ts';",
+                '',
+                "const ROUTES = ['/api/tasks'];",
+                '',
+                'export function send(res: { json: (status: number, body: unknown) => void }, path: string): void {',
+                "  if (ROUTES.includes(path)) res.json(501, { error: 'not implemented yet' });",
+                '}',
+                '',
+                'export const tasks: Task[] = [];',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      });
+    },
+  },
+  {
+    id: 'A7-11-clean-wired-handler',
+    group: 'A7 契约一致性',
+    title: '【对照】处理器真的被调用，且没有占位',
+    injection:
+      '无 —— 对照组。这条是给 A7-09/A7-10 做反向验证的：**接线正确的好代码必须 PASS**。' +
+      '少了它，「新增了两条检查」带来的可能只是误报率上升',
+    anchors: ['A7'],
+    expect: { kind: 'clean' },
+    build: async (ctx) => {
+      await ctx.pkg({ name: 'bench' });
+      const id = await ctx.artifact({ kind: 'Contract', producer: 'pm', content: GOOD_CONTRACT });
+      await ctx.store.freeze(id);
+      await ctx.file('shared/contract/types.ts', GENERATED_TYPES);
+      await ctx.artifact({
+        kind: 'CodeModule',
+        producer: 'backend',
+        scope: 'api',
+        content: {
+          files: [
+            {
+              path: 'src/api/app.ts',
+              content: [
+                "import type { Task } from '../../shared/contract/types.ts';",
+                "import { handleTasksRoute } from './tasks.ts';",
+                '',
+                "const ROUTES = ['/api/tasks'];",
+                '',
+                'export function dispatch(path: string): Task[] {',
+                '  if (ROUTES.includes(path)) return handleTasksRoute();',
+                '  return [];',
+                '}',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'src/api/tasks.ts',
+              content: [
+                "import type { Task } from '../../shared/contract/types.ts';",
+                '',
+                'export function handleTasksRoute(): Task[] {',
+                '  return [];',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      });
+    },
+  },
+
   // ── B1 目标达成 ──────────────────────────────────────────────
   {
     id: 'B1-01-fabricated-evidence',

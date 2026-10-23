@@ -677,6 +677,25 @@ export function acceptanceFor(finding: { code: string; file?: string; line?: num
       return `使服务能启动并响应 ${String(d.healthUrl)}，使 A6 锚点 PASS`;
     case 'unimplemented-endpoint':
       return `实现契约端点 ${String(d.path)}，使 A7 锚点 PASS`;
+    /**
+     * 这两条（`unwired-handler` / `endpoint-stub`）都来自同一个真实失败：
+     * 端点字符串在代码里到处都是，但分发逻辑从不调用业务模块，运行期一律 501。
+     *
+     * 验收条件必须指向**行为**（能跑通），而不是「把字符串放对位置」——
+     * 因为上一版 A7 就是只查字符串，被这种写法骗了个满分。
+     * 措辞里也刻意点名「被调用的那一条路径」，让角色知道要改的是分发逻辑，
+     * 而不是再多导出一个别名（cb-2 里正是这么「假装修好」的）。
+     */
+    case 'unwired-handler':
+      return (
+        `把 ${loc} 的 ${String(d.handler)}() 接入请求分发逻辑（路由表里要真的调用它），` +
+        '使「发一个真实请求」能走到这段代码；**加 export 别名不算接线**。使 A7 锚点 PASS'
+      );
+    case 'endpoint-stub':
+      return (
+        `把 ${loc} 里的「未实现」占位（${String(d.snippet ?? '')}）换成真实实现，` +
+        '不要再返回 501 占位，使 A7 锚点 PASS'
+      );
     case 'contract-not-frozen':
     case 'missing-generated-types':
       return `使契约冻结且生成类型文件存在于 ${String(d.path ?? '契约声明的路径')}，使 A7 锚点 PASS`;

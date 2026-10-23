@@ -774,8 +774,248 @@ test('🔴 A7：生成类型文件存在但角色手写模型没 import → cont
   }
 });
 
-// ════════════════════════════════════════════════════════════════
-// B 层 · 语义锚的证据核验（防「顺着幻觉自我确认」）
+// ── A7 · 可达性（「写了」≠「生效」）──────────────────────────────
+
+/**
+ * 这两条测试来自同一个真实失败（命题测试 cb-2，见 `docs/07 §P`）：
+ *
+ * 契约里的端点**全部**在 `app.ts` 的路由表里出现，`apiText.includes(p)` 全部命中，
+ * 于是老版 A7 报 PASS。而实际代码在鉴权通过后直接 `sendJson(res, 501, ...)` 返回，
+ * 从不调用业务模块 —— 39 条测试里 28 条挂在 501 上。
+ *
+ * 所以这里测的不是「能不能匹配到字符串」，而是**字符串匹配那条路走不通时 A7 还会不会说话**。
+ */
+async function seedFrozenContract(f: Fixture, paths: string[]) {
+  await f.store.put({
+    kind: 'Contract',
+    producer: 'pm',
+    content: {
+      version: 1,
+      openapi: { openapi: '3.1.0', paths: Object.fromEntries(paths.map((p) => [p, {}])) },
+      jsonSchemas: { Task: { type: 'object' } },
+      generatedTypesPath: 'shared/contract/types.ts',
+      changeRequests: [],
+    },
+  });
+  const art = f.store.head('Contract')!;
+  await f.store.freeze(art.id);
+  await write(f.root, 'shared/contract/types.ts', 'export interface Task { id: string }\n');
+}
+
+test('🔴 A7：处理器导出了但没人调用 → unwired-handler fail（端点字符串存在 ≠ 能跑）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/papers']);
+    // 路由表里**写着** /api/papers（老检查因此判「已实现」），
+    // 但分发逻辑在鉴权后直接 501，业务模块一次都没被调用。
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/app.ts',
+            content: [
+              "import { handlePapersRoute } from './papers.ts';",
+              "const ROUTES = ['/api/papers'];",
+              'export async function handleRequest(req, res) {',
+              "  if (req.url === '/api/papers') {",
+              "    sendJson(res, 501, { error: 'not implemented yet' });",
+              '    return;',
+              '  }',
+              '}',
+              // 入口本身是接好的（否则它会先被报成 unwired —— 那也是对的，
+              // 但这里要单独测「业务模块没接线」，所以入口按真实写法接上）
+              'export const server = createServer((req, res) => handleRequest(req, res));',
+            ].join('\n'),
+          },
+          {
+            path: 'src/api/papers.ts',
+            content: [
+              'export function handlePapersRoute(req) {',
+              '  return { ok: true };',
+              '}',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const unwired = r.findings.filter((x) => x.code === 'unwired-handler');
+    assert.equal(unwired.length, 1, 'handlePapersRoute 写了一行没接线，必须被抓出来');
+    assert.equal(unwired[0]!.file, 'src/api/papers.ts');
+    assert.equal(unwired[0]!.targetRole, 'backend');
+    assert.equal(unwired[0]!.severity, 'fail');
+    assert.equal((unwired[0]!.data as { handler: string }).handler, 'handlePapersRoute');
+    assert.equal(r.verdict, 'FAIL');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('🔴 A7：export 别名不能冒充接线 → unwired-handler（cb-2 的 handlePapersRoute 出现 5 次全是别名）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/papers']);
+    /**
+     * 这是从真实产出里抄下来的形状。`handlePapersRoute` 在这个文件里出现 4 次，
+     * 加上 import 共 5 次 —— 一个「出现次数 ≥ 2 就算接线」的判据会判它已接线。
+     * 而它一次都没被调用：三个名字全指向同一个没跑过的函数。
+     */
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/app.ts',
+            content: [
+              "import { handlePapersRoute } from './papers.ts';",
+              "const ROUTES = ['/api/papers'];",
+              'export function dispatch(req) {',
+              '  return null;',
+              '}',
+            ].join('\n'),
+          },
+          {
+            path: 'src/api/papers.ts',
+            content: [
+              'export function handlePapersRoute(request) {',
+              '  return request;',
+              '}',
+              'export const handlePapersRequest = handlePapersRoute;',
+              'export const papersRouter = handlePapersRoute;',
+              'export default handlePapersRoute;',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const unwired = r.findings.filter((x) => x.code === 'unwired-handler');
+    assert.equal(unwired.length, 1, '别名/再导出不是接线，不许因为出现次数多就放行');
+    assert.equal((unwired[0]!.data as { reason: string }).reason, 'export-only');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('🔴 A7：处理器被真正调用 → 不报 unwired-handler（对照组，防误报）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/papers']);
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/app.ts',
+            content: [
+              "import { handlePapersRoute } from './papers.ts';",
+              "const ROUTES = ['/api/papers'];",
+              'export function dispatch(req) {',
+              '  return handlePapersRoute(req);',
+              '}',
+            ].join('\n'),
+          },
+          {
+            path: 'src/api/papers.ts',
+            content: 'export function handlePapersRoute(request) {\n  return request;\n}\n',
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    assert.equal(
+      r.findings.filter((x) => x.code === 'unwired-handler').length,
+      0,
+      '真接线了就不能报 —— 误报会让角色去改一段本来正确的代码',
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('🔴 A7：端点只是 501 占位 → endpoint-stub fail（模型自己承认没实现）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/papers']);
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/app.ts',
+            content: [
+              "const ROUTES = ['/api/papers'];",
+              'export function dispatch(req, res) {',
+              '  if (req.url === "/api/papers") {',
+              "    sendJson(res, 501, { error: 'not implemented yet' });",
+              '  }',
+              '}',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const stub = r.findings.filter((x) => x.code === 'endpoint-stub');
+    assert.equal(stub.length, 1, '501 占位必须被报出来，而不是因为路径字符串存在就被放过');
+    assert.equal(stub[0]!.file, 'src/api/app.ts');
+    assert.equal(stub[0]!.line, 4, '要给出行号，角色才知道改哪儿');
+    assert.equal(stub[0]!.targetRole, 'backend');
+    assert.equal(stub[0]!.severity, 'fail');
+    assert.equal((stub[0]!.data as { status: number }).status, 501);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('🔴 A7：注释里的「not implemented」不算占位 → 先剥注释（否则注释会让锚点乱叫）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/papers']);
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          {
+            path: 'src/api/app.ts',
+            content: [
+              "const ROUTES = ['/api/papers'];",
+              '// 这里以前是 not implemented，已经实现完了',
+              'export function dispatch(req) {',
+              '  return req;',
+              '}',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    assert.equal(
+      r.findings.filter((x) => x.code === 'endpoint-stub').length,
+      0,
+      '剥注释是 A7 所有检查的共同前提（A7-07 那个假绿灯就是栽在注释上的）',
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 
 async function seedRequirements(f: Fixture, count = 2) {

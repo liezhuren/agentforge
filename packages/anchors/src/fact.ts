@@ -1100,6 +1100,15 @@ export const A7: Anchor = {
     const webModules = ctx.store.heads('CodeModule').filter((m) => m.scope === 'web');
     const missingEndpoints: string[] = [];
 
+    // 逐文件剥注释，而不是先拼接再剥。
+    //
+    // 旧写法是 `stripCodeComments(concatModules(...))` —— 把一个**有状态的**状态机
+    // 喂给一段拼接文本。如果某个文件的末尾停在一个模板字符串里（没闭合），
+    // 状态会带进下一个文件，把后面整个文件都当成字符串内容（或反过来）。
+    // 单个文件内该问题不存在（文件不闭合在 tsc 里已经是错误），
+    // 所以逐文件剥是严格更正确的做法，而且顺带让这两条新检查拿到了 `path`。
+    const apiFiles = apiSourceFiles(apiModules);
+
     if (apiModules.length === 0) {
       findings.push({
         code: 'implementation-unverified',
@@ -1113,7 +1122,7 @@ export const A7: Anchor = {
       // 于是一句「// TODO: 实现 /api/tasks」就能让检查通过 ——
       // 端点明明一行都没实现，A7 却认为它已实现。
       // 注释里的路径也是路径子串，这是子串匹配的天然盲点。
-      const apiText = stripCodeComments(await concatModules(ctx, apiModules));
+      const apiText = apiFiles.map((f) => f.content).join('\n');
       for (const p of openapiPaths) {
         if (!apiText.includes(p)) {
           missingEndpoints.push(p);
@@ -1126,6 +1135,45 @@ export const A7: Anchor = {
           });
         }
       }
+    }
+
+    /**
+     * 3b) 端点只是**占位**，或者处理器写了却**没接线**。
+     *
+     * ── 这两条检查是怎么来的（命题测试 cb-2，第 20 轮）────────────────────
+     *
+     * 真实运行里 A7 报 PASS —— 17 个契约端点在 `app.ts` 的**路由表里全都写着**，
+     * 于是上面第 3 项的 `apiText.includes(p)` 全部命中。而实际代码是：
+     *
+     * ```ts
+     * if (isProtectedRoute(method, pathname)) {
+     *   const user = currentUser(req);
+     *   if (user === null) { sendJson(res, 401, ...); return; }
+     *   sendJson(res, 501, { error: 'not implemented yet', path: pathname });
+     *   return;                       // ← 从不调用业务模块
+     * }
+     * ```
+     *
+     * 而 `papers.ts` / `comments.ts` / `friends.ts` / `interests.ts` 都导出了
+     * `handleXxx()`，**全目录无人调用**。39 条测试里 28 条挂在 501 上。
+     *
+     * 也就是说：契约没漂移、类型也 import 了、路径也在代码里出现了 ——
+     * 三层检查全都「通过」，而功能一行都没生效。
+     * 这是**子串匹配的根本局限**：它只能证明「这段文字存在」，不能证明「这条路径可达」。
+     *
+     * 所以补两条都是**可达性**性质的检查，且都不需要理解语义：
+     *
+     *   - `endpoint-stub`：代码里明写着「未实现」占位。这是模型自己承认的，
+     *     把它当成「可能实现」纯属自欺。
+     *   - `unwired-handler`：一个请求处理器（`handleXxx` 这类命名）导出了，
+     *     但没有任何一处**调用点或注册点**。导出 ≠ 接线。
+     *
+     * ⚠️ 两条都是**启发式**，不是证明。命名不像处理器的死代码（工具函数）不报；
+     * 被别处 import 了但没用起来的，报但措辞不同。检查结论里必须说清这一点，
+     * 否则角色会以为「A7 PASS ⇒ 端点一定能跑」—— 那正是上一个假绿灯的成因。
+     */
+    if (apiFiles.length > 0) {
+      findings.push(...stubFindings(apiFiles), ...unwiredHandlerFindings(apiFiles));
     }
 
     // 4) 前端调用了契约未声明的端点
@@ -1278,7 +1326,7 @@ export const A7: Anchor = {
     return {
       verdict: worst(findings, 'PASS'),
       findings,
-      method: 'openapi-path coverage + generated-types existence + duplication heuristic + 任务切片覆盖',
+      method: 'openapi-path coverage + generated-types existence + duplication heuristic + 任务切片覆盖 + 占位/可达性启发式',
       authority: 'authoritative',
       subjects,
       contentHashes: hashes,
@@ -1287,6 +1335,16 @@ export const A7: Anchor = {
         missing: missingEndpoints.length,
         calledPaths: calledPaths.size,
         contractFrozen: Boolean(contractArt.frozenHash),
+        /**
+         * 把「已实现」和「能跑」分开计数。
+         *
+         * `missing` = 字符串里都没有（老口径）。`unwired` / `stubbed` 是新的两维：
+         * 端点文字在、但没人接线，或者干脆是 501 占位。
+         * 三个数分开的理由：它们的**责任人和修法不一样**
+         * （没写 → 补实现；没接线 → 改分发逻辑；占位 → 把占位换成实现）。
+         */
+        unwired: findings.filter((x) => x.code === 'unwired-handler').length,
+        stubbed: findings.filter((x) => x.code === 'endpoint-stub').length,
         treeHash: await sourceTreeHash(ctx),
       },
     };
@@ -1348,6 +1406,208 @@ export function stripCodeComments(text: string): string {
     }
   }
   return out.join('');
+}
+
+/** 一个已被剥掉注释的后端源文件。A7 的「可达性」类检查按文件粒度工作。 */
+export interface ApiSourceFile {
+  path: string;
+  /** 内容已剥掉注释（`stripCodeComments`）。 */
+  content: string;
+}
+
+/**
+ * 把后端 CodeModule 打平成「路径 + 已剥注释的源码」。
+ *
+ * 这些检查必须**逐文件**做：`unwired-handler` 的判据是「有没有任何一处引用」，
+ * 而这个判据的「别处」需要文件边界才成立（同一文件内被调用 vs 跨文件被 import，
+ * 结论差异很大）。
+ */
+export function apiSourceFiles(mods: Artifact[]): ApiSourceFile[] {
+  const out: ApiSourceFile[] = [];
+  for (const m of mods) {
+    for (const f of (m.content as CodeModule).files ?? []) {
+      out.push({ path: f.path, content: stripCodeComments(f.content) });
+    }
+  }
+  return out;
+}
+
+/**
+ * 「未实现」占位标记。
+ *
+ * 刻意只认这一族写法（`not implemented` / `not_implemented` / `notImplemented`）：
+ * 它们是**模型自己在代码里承认没实现**。不去猜 `TODO`（大量 TODO 是真实待办，
+ * 而且多半在注释里，已被剥掉）、也不猜 `placeholder`（数据种子、UI 文案都会用）。
+ * 宁窄勿宽 —— 一条误报的代价是角色去改一段本来没问题的代码。
+ */
+const NOT_IMPLEMENTED_RE = /\bnot[\s_-]*implemented\b/i;
+
+/**
+ * `endpoint-stub`：后端代码里出现「未实现」占位。
+ *
+ * 只在**每个文件报一条**（附首次出现的行号与那行代码）。
+ * 一个 501 兜底分支往往覆盖十几个端点，逐行报会把工单淹没 ——
+ * 而角色要修的其实是同一个决定：「把业务模块接进分发逻辑」。
+ */
+export function stubFindings(files: ApiSourceFile[]): AnchorFinding[] {
+  const findings: AnchorFinding[] = [];
+  for (const f of files) {
+    const lines = f.content.split('\n');
+    const hits: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (NOT_IMPLEMENTED_RE.test(lines[i]!)) hits.push(i + 1);
+    }
+    if (hits.length === 0) continue;
+
+    // 501 是「占位」的强证据，但不是必要条件：`throw new Error('not implemented')`
+    // 一样是占位。所以它只用来加强措辞，不用来作为是否报警的门槛。
+    const has501 = /\b501\b/.test(f.content);
+    const snippet = lines[hits[0]! - 1]!.trim().slice(0, 160);
+    findings.push({
+      code: 'endpoint-stub',
+      severity: 'fail',
+      message:
+        `${f.path} 里写着「未实现」占位（第 ${hits.join('、')} 行：${snippet}）—— ` +
+        `端点只是占位${has501 ? '，运行期返回 501' : ''}，不会执行任何业务逻辑，` +
+        '依赖它的测试必然全部失败。请真正实现这个端点，或把它从契约里删掉。',
+      file: f.path,
+      line: hits[0]!,
+      targetRole: 'backend',
+      data: { lines: hits, ...(has501 ? { status: 501 } : {}), snippet },
+    });
+  }
+  return findings;
+}
+
+/**
+ * 「像请求处理器」的命名。
+ *
+ * 这是启发式，**不是**语义判断，所以范围刻意收紧到「入口」语义的名字：
+ * `handleXxx` / `dispatchXxx` / `serveXxx` / `xxxHandler`。
+ *
+ * 为什么不报所有「没被引用的导出」：实测在 cb-2 上那样会报 24 条（工具函数
+ * `countPapers`、`resetPapers`、`listRoutes` 全在内）—— 这些是**多余的公共 API**，
+ * 不是「功能没生效」，混在一起会让角色去删一堆无害代码，真正的问题被埋在噪音里。
+ * 请求处理器不一样：它没被接线，对应的端点就**一定**跑不起来。
+ *
+ * `*Handler` 这一支额外排除 `setFallbackHandler` 这类**注册辅助函数**：
+ * 它们不是入口，没人调用它们只说明扩展点没被用到，说「对应端点不会执行」是错的措辞。
+ * 这条是实测出来的（cb-2 第一次跑就把它报了出来），不是预设。
+ */
+const HANDLER_NAME_RE =
+  /^(?:handle|dispatch|serve)[A-Z_]|^(?!(?:set|register|unregister|get|create|remove|delete|add|use)[A-Z])[a-z][\w$]*Handler$/;
+
+/** `export function name(` / `export async function name(` */
+const FN_DECL_RE = /^[ \t]*export[ \t]+(?:(?:async|default)[ \t]+)*function[ \t]*\*?[ \t]*([A-Za-z_$][\w$]*)/gm;
+/** `export const name = (...) =>` / `export const name = async (x: T): R =>` */
+const ARROW_DECL_RE =
+  /^[ \t]*export[ \t]+const[ \t]+([A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]*)?=[ \t]*(?:async[ \t]*)?(?:\([^)\n]*\)|[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]*)?=>/gm;
+
+/**
+ * `unwired-handler`：导出的请求处理器在整个后端里没有任何**调用点或注册点**。
+ *
+ * 判据（逐行，只在已剥注释的代码上）：
+ *   一行里出现了这个名字，且这一行不是
+ *     ① 定义行本身
+ *     ② `import …` / `export { … }` / `export * …`（只是搬运符号，不是使用）
+ *     ③ 纯别名行 `export const a = NAME;` / `export default NAME;`
+ *   那么它算「被接线」。
+ *
+ * ⚠️ 为什么必须排除 ②③ —— 这是被测出来的，不是我预设的：
+ * cb-2 的 `papers.ts` 里 `handlePapersRoute` 出现了 **5 次**：
+ *
+ * ```ts
+ * export function handlePapersRoute(request: PapersRequest) { … }  // 定义
+ * export const handlePapersRequest = handlePapersRoute;             // 别名
+ * export const papersRouter = handlePapersRoute;                   // 别名
+ * export default handlePapersRoute;                                // 再导出
+ * ```
+ *
+ * 如果按「出现次数 ≥ 2 就算接线」，它有 5 次，会被判成已接线 —— 而它一次都没被调用过。
+ * 模型这种「多起几个名字」的行为恰好会骗过计数式判据，所以判据必须是
+ * **引用位置的性质**（调用/注册）而不是次数。
+ */
+export function unwiredHandlerFindings(files: ApiSourceFile[]): AnchorFinding[] {
+  const findings: AnchorFinding[] = [];
+
+  for (const f of files) {
+    const lines = f.content.split('\n');
+    for (const re of [FN_DECL_RE, ARROW_DECL_RE]) {
+      re.lastIndex = 0;
+      for (const m of f.content.matchAll(re)) {
+        const name = m[1]!;
+        if (!HANDLER_NAME_RE.test(name)) continue;
+        const declLine = f.content.slice(0, m.index ?? 0).split('\n').length;
+
+        const verdict = wiringOf(name, f, declLine, files);
+        if (verdict.wired) continue;
+
+        findings.push({
+          code: 'unwired-handler',
+          severity: 'fail',
+          message:
+            verdict.via === 'import-only'
+              ? `后端导出了 ${name}()，但它**只出现在 import 里**，从没被调用或注册到路由 —— ` +
+                '这是「看起来接线了」的假象，对应端点运行期不会执行。请真的把它接进分发逻辑。'
+              : verdict.via === 'export-only'
+                ? `后端导出了 ${name}()，但只有 export 别名/再导出指向它，没有任何调用点 —— ` +
+                  '模块写了却没接线，对应端点运行期不会执行（只会拿到 501/404）。'
+                : `后端导出了 ${name}()，但整个后端没有一处引用它 —— ` +
+                  '模块写了却没接线，对应端点运行期不会执行（只会拿到 501/404）。',
+          file: f.path,
+          line: declLine,
+          targetRole: 'backend',
+          data: { handler: name, reason: verdict.via },
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+/**
+ * 判断某个处理器名有没有真正的使用点。
+ *
+ * 返回 `wired: false` 时 `via` 说明「差在哪一步」，用于让工单措辞具体：
+ *   - `never`：全后端没出现过（连 import 都没有）—— 最彻底的死代码
+ *   - `import-only`：只在 import/export 语句里出现过 —— 假接线
+ *   - `export-only`：只有同文件的 export 别名/再导出 —— 假接线（cb-2 就是这种）
+ */
+function wiringOf(
+  name: string,
+  declFile: ApiSourceFile,
+  declLine: number,
+  files: ApiSourceFile[],
+): { wired: boolean; via: 'never' | 'import-only' | 'export-only' } {
+  const identRe = new RegExp(`(?<![\\w$])${escapeRe(name)}(?![\\w$])`);
+  const aliasRe = new RegExp(
+    `^\\s*export\\s+(?:default\\s+)?(?:const\\s+[A-Za-z_$][\\w$]*\\s*=\\s*)?${escapeRe(name)}\\s*;?\\s*$`,
+  );
+  // 只搬运符号，不使用：`import ...`、`export { … }`、`export * from`
+  const reexportRe = /^\s*import\b|^\s*export\s*(?:\*|\{)|^\s*export\s+type\s*\{/;
+
+  let sawImport = false;
+  let sawAlias = false;
+
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (!identRe.test(line)) continue;
+      if (file === declFile && i + 1 === declLine) continue; // 定义行本身
+      if (reexportRe.test(line)) {
+        sawImport = true;
+        continue;
+      }
+      if (aliasRe.test(line)) {
+        sawAlias = true;
+        continue;
+      }
+      return { wired: true, via: 'never' }; // 真正的使用点（调用/注册/传参）
+    }
+  }
+
+  return { wired: false, via: sawAlias ? 'export-only' : sawImport ? 'import-only' : 'never' };
 }
 
 async function concatModules(ctx: AnchorContext, mods: Artifact[]): Promise<string> {
