@@ -1,0 +1,25 @@
+{
+  "name": "llm-generated",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node run-tests.mjs",
+    "start": "node src/api/server.ts"
+  },
+  "agentforge": {
+    "healthUrl": "http://127.0.0.1:8788/health",
+    "environmentNotes": [
+      "相对导入必须带显式 `.ts` 扩展名（本项目的代码由 Node 原生类型剥离直接运行）。",
+      "禁止在测试或应用代码中 spawn 子进程（执行 npm/node 等外部命令）。当前运行环境禁止管道式 stdio，spawn 会直接 EPERM 失败 —— 测试应当直接 import 被测模块并对返回值做断言，不要通过命令行间接验证。"
+    ],
+    "protectedFiles": [
+      "run-tests.mjs"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "@types/node": "^26.0.0"
+  }
+}
