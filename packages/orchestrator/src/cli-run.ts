@@ -15,7 +15,7 @@
  * 「import 即执行 main()」会让它无法在进程内被验证。
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -254,6 +254,92 @@ export async function runCli(io: CliIO): Promise<number> {
 
   const brief =
     get('brief') ?? '做一个任务看板：用户可以创建任务、列出全部任务，并支持按状态筛选。';
+
+  /**
+   * 退出钩子 + 心跳：让「进程为什么没了」变成可查的事实。
+   *
+   * 为什么需要（实测教训）：2026-10-24 凌晨有 8 轮 run 在 15–20 分钟处**同时消失**，
+   * 表现为：日志没有异常、没有堆栈、`decisions.jsonl` 里**没有 `run.finished`**、
+   * 退出码 -1（TerminateProcess 风格），而 Windows 事件日志里也没有 node 的崩溃记录。
+   * 结论是「被外部杀掉」，但**查不出是谁** —— 因为 cli-run 一个 `process.on` 都没有，
+   * 连「收到过信号」这件事都没留下痕迹。
+   *
+   * 现在：
+   *  - SIGINT / SIGTERM / uncaughtException / unhandledRejection → 写一条 `run.aborted`，
+   *    带上阶段、最后动作、错误信息。**优雅的杀法从此有记录。**
+   *  - 心跳文件每秒级刷新，用来区分「进程死了」和「进程活着但卡在某个调用上」
+   *    （后者在 `runs/*.jsonl` 里看不出来，因为那时候还没写盘）。
+   *
+   * ⚠️ 诚实的边界：Windows 的 `TerminateProcess`（taskkill /F、任务管理器结束任务）
+   * **无法被进程捕获**。那种情况下 `run.aborted` 不会出现，只能靠心跳停止 + 无 run.finished 推断。
+   */
+  const heartbeatPath = join(workspace, '.agentforge', 'heartbeat.json');
+  let lastAction = '启动';
+  let hbTimer: NodeJS.Timeout | undefined;
+  const writeHeartbeat = (note?: string): void => {
+    try {
+      mkdirSync(join(workspace, '.agentforge'), { recursive: true });
+      writeFileSync(
+        heartbeatPath,
+        JSON.stringify({ pid: process.pid, at: new Date().toISOString(), action: note ?? lastAction }, null, 2),
+        'utf8',
+      );
+    } catch {
+      /* 心跳失败绝不能影响 run */
+    }
+  };
+  writeHeartbeat();
+  hbTimer = setInterval(() => writeHeartbeat(), 5_000);
+  hbTimer.unref?.();
+
+  /**
+   * 让心跳里的「最后动作」是**真的**：订阅编排器的事件总线。
+   *
+   * 心跳的价值不在于"进程还活着"，而在于**进程死的时候能说出它当时在干什么**。
+   * 只写时间戳的话，事后仍然只能看到「最后写盘时间」——
+   * 而那正是 `runs/*.jsonl` 已经能告诉我们的（所以之前毫无帮助）。
+   */
+  if (bus) {
+    bus.on((e) => {
+      if (e.t === 'stage.enter') lastAction = `阶段 ${String(e.stage)}`;
+      else if (e.t === 'gate.evaluated') {
+        const r = e.result as { stage?: string; sequence?: number; nextAction?: { kind?: string } };
+        lastAction = `Gate ${String(r.stage)} #${String(r.sequence)} → ${String(r.nextAction?.kind)}`;
+      } else if (e.t === 'workorder.created') lastAction = `派工单 → ${String((e as { to?: string }).to ?? '')}`;
+      else if (e.t === 'roundtable.opened') lastAction = '圆桌会议';
+      else if (e.t === 'run.finished') lastAction = '已结束';
+      writeHeartbeat();
+    });
+  }
+
+  const abortLog = new DecisionLog(workspace);
+  let aborted = false;
+  const onAbort = (why: string): void => {
+    if (aborted) return;
+    aborted = true;
+    if (hbTimer) clearInterval(hbTimer);
+    writeHeartbeat(`已中止：${why}`);
+    // 同步写不保证，但比什么都不写强得多
+    void abortLog.append('run.aborted', { why, lastAction, pid: process.pid }).catch(() => {});
+  };
+  process.on('SIGINT', () => {
+    onAbort('SIGINT（Ctrl+C）');
+    process.exit(130);
+  });
+  process.on('SIGTERM', () => {
+    onAbort('SIGTERM');
+    process.exit(143);
+  });
+  process.on('uncaughtException', (e) => {
+    onAbort(`uncaughtException: ${e instanceof Error ? e.message : String(e)}`);
+    out(`${C.red}未捕获异常，已记录 run.aborted：${e instanceof Error ? e.stack ?? e.message : String(e)}${C.reset}`);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (e) => {
+    onAbort(`unhandledRejection: ${e instanceof Error ? e.message : String(e)}`);
+    out(`${C.red}未处理的 Promise 拒绝，已记录 run.aborted：${e instanceof Error ? e.stack ?? e.message : String(e)}${C.reset}`);
+    process.exit(1);
+  });
 
   const summary = await new Orchestrator({
     projectRoot: workspace,

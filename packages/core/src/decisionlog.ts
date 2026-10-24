@@ -51,6 +51,17 @@ export const DECISION_KINDS = [
   'testreport.published',
   'project.contract.snapshot',
   'project.contract.violation',
+  /**
+   * 本次 run **没有正常结束**：被信号中止，或进程内未捕获异常。
+   *
+   * 加它的理由（实测）：2026-10-24 凌晨 8 轮 run 在 15–20 分钟处同时消失，
+   * 没有 `run.finished`、没有堆栈、退出码 -1，Windows 事件日志里也查不到 ——
+   * 事后**无法区分**「被外部杀掉」与「自己崩了」。这个 kind 让前者至少留下一条记录。
+   *
+   * ⚠️ 它写不出来的情况本身就是信息：`TerminateProcess`（taskkill /F）无法被捕获，
+   * 此时「有 run.aborted」= 优雅中止，「没有且也没有 run.finished」= 硬杀。
+   */
+  'run.aborted',
 ] as const;
 
 export type DecisionKind = (typeof DECISION_KINDS)[number];
