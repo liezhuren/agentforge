@@ -22,6 +22,7 @@ import type { ArtifactStore } from '../../core/src/store.ts';
 import { digestContract } from '../../core/src/contractdigest.ts';
 import { renderModuleCards } from './modulecard.ts';
 import { contractCoverageErrors } from './contractcoverage.ts';
+import { effectiveContractSlice, endpointConstraintFor } from './contractslice.ts';
 // LlmRequest 属于 llm 包（原写成从 core 导入 —— 那个成员不存在，且运行时被擦除所以从不报错）
 import type { LlmContextReport, LlmRequest } from '../../llm/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
@@ -736,11 +737,23 @@ export function selectContext(args: {
        * 有任务声明的切片时按切片裁剪，没有就整份摘要。
        */
       if (a.kind === 'Contract' && body.length > tierLeft) {
-        const slice = req.contractSlice;
+        /**
+         * 前端任务的切片要兜底：**永远并上契约声明的全部路径**。
+         *
+         * 实测（deliv-break2，22 条需求的茶歇系统）：契约有 18 条路径，
+         * 而 PM 给前端任务 T-012 声明的切片只有 `["/"]` —— 前端于是只看到 `/`，
+         * 自己发明了 `/api/comments`、`/api/follows`、`/api/users`，
+         * A7 连报 8 轮 `undeclared-endpoint`，最后 `0/22` 达成、带债收场。
+         *
+         * 详见 `contractslice.ts` 的注释：这是「上下文饥饿」在切片层的重演。
+         */
+        const slice = effectiveContractSlice(req, a.content);
         const digestText = digestContract(a.content as never, { ...(slice ? { slice } : {}) });
+        const constraint = endpointConstraintFor(req.scope) ?? '';
         const note =
           `（完整契约 ${body.length} 字符，超出本次上下文预算 ${tierLeft} 字符（该层可用额度），已压缩为可执行信息；` +
-          `字段描述、示例、pattern 等解释性内容未包含）\n`;
+          `字段描述、示例、pattern 等解释性内容未包含）\n` +
+          constraint;
         if (note.length + digestText.length <= tierLeft) {
           body = note + digestText;
           digest = true;
