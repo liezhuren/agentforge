@@ -93,11 +93,12 @@ def header(s, kicker, title, sub=None):
     ln.line.width = Pt(1)
 
 
-def footer(s, n):
+def footer(s, total=9):
+    n = len(prs.slides)
     f = text(s, Inches(0.7), Inches(6.95), Inches(8), Inches(0.3), 10, MUTED)
     para(f.text_frame, "AgentForge · 多角色 AI 研发引擎 · 赛道 B", 10, MUTED, first=True)
     g = text(s, Inches(11.6), Inches(6.95), Inches(1), Inches(0.3), 10, MUTED, align=PP_ALIGN.RIGHT)
-    para(g.text_frame, f"{n} / 8", 10, MUTED, first=True)
+    para(g.text_frame, f"{n} / {total}", 10, MUTED, first=True)
 
 
 def box(s, x, y, w, h, label, sub, color=FG, size=12, sub_size=10, fill=PANEL):
@@ -212,10 +213,58 @@ tf.vertical_anchor = MSO_ANCHOR.MIDDLE
 para(tf, "根子是一行代码：鉴权通过后直接 sendJson(res, 501, { error: 'not implemented yet' }) 然后 return —— 从不调用业务模块",
      13, FG, True, first=True)
 para(tf, "而 4 个 handleXxx() 全都「导出了、无人调用」。这是我自己跑出来的真实产物，不是编的例子。", 12, MUTED, space_before=4)
-footer(s, 2)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
-# 第 3 页 · 根因：输入被饿死
+# 第 3 页 · 实跑产物：茶歇系统（这是全场最硬的一页）
+# ══════════════════════════════════════════════════════════════
+s = slide()
+header(s, "实跑产物", "先看东西：一个 AI 写出来、真的能跑的系统",
+       "demo/coffeebreak/ · 20 个 TypeScript 源文件 · 零第三方依赖（不装任何包就能启动）")
+
+SHOT = r"E:\github\agentforge\docs\competition\evidence\cb-6-ui-home.png"
+shot_w = Inches(7.05)
+shot_h = int(shot_w * 900 / 1440)
+s.shapes.add_picture(SHOT, Inches(0.7), Inches(1.98), width=shot_w, height=shot_h)
+cap = text(s, Inches(0.7), Inches(1.98) + shot_h + Inches(0.08), Inches(7.05), Inches(0.3), 10, MUTED)
+para(cap.text_frame, "真实界面截图（headless 浏览器，1440×900）· 用 admin / admin123 登录后可见全部功能", 10, MUTED, first=True)
+
+# 右侧：数字与旅程
+x = Inches(8.05)
+w = Inches(4.58)
+
+p = panel(s, x, Inches(1.95), w, Inches(1.42), PANEL, ACCENT)
+tf = p.text_frame
+tf.word_wrap = True
+tf.margin_left = Emu(137160)
+tf.margin_top = Emu(91440)
+para(tf, "可复核的验收结果", 12, ACCENT, True, first=True)
+para(tf, "22 / 22   单元 + 集成测试", 14, FG, True, space_before=8)
+para(tf, "33 / 33   真实 HTTP 端到端验收", 14, FG, True, space_before=4)
+para(tf, "18 / 18   任务书要求的论文属性（建→读回）", 12, FG, space_before=4)
+
+p = panel(s, x, Inches(3.47), w, Inches(2.2))
+tf = p.text_frame
+tf.word_wrap = True
+tf.margin_left = Emu(137160)
+tf.margin_top = Emu(91440)
+para(tf, "演示动线（3 分钟够走完）", 12, ACCENT, True, first=True)
+para(tf, "① 注册 → 登录（Bearer 会话）", 11, FG, space_before=8)
+para(tf, "② 管理员建论文，18 项属性逐项落库", 11, FG, space_before=4)
+para(tf, "③ 评论 + 对评论的回复（父子结构）", 11, FG, space_before=4)
+para(tf, "④ 加好友 / 关注 / 设兴趣 → 推荐重排", 11, FG, space_before=4)
+para(tf, "⑤ 普通用户删论文 → 403（权限边界）", 11, FG, space_before=4)
+
+p = panel(s, x, Inches(5.78), w, Inches(1.05))
+tf = p.text_frame
+tf.word_wrap = True
+tf.margin_left = Emu(137160)
+tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+para(tf, "生成成本", 11, ACCENT, True, first=True)
+para(tf, "40–75 分钟 · 约 100 万 token · ≈ $1–2（吞吐 ~200 tok/s）", 10, MUTED, space_before=3)
+footer(s)
+# ══════════════════════════════════════════════════════════════
+# 第 4 页 · 根因：输入被饿死
 # ══════════════════════════════════════════════════════════════
 s = slide()
 header(s, "根因", "不是模型不行，是系统在让角色「盲写」",
@@ -273,7 +322,7 @@ tf.vertical_anchor = MSO_ANCHOR.MIDDLE
 para(tf, "关键判据", 12, ACCENT, True, first=True)
 para(tf, "契约（60,720 字符）整件丢失 → 后端照 PRD 散文自己发明接口；别人的代码一件没进 → 不可能接线；测试报告一件没进 → 连修 6 轮不收敛。",
      13, FG, space_before=4)
-footer(s, 3)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
 # 第 4 页 · 架构
@@ -317,7 +366,7 @@ tf.word_wrap = True
 tf.margin_left = Emu(137160)
 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
 para(tf, "零依赖：Node ≥ 24 原生执行 TypeScript，克隆即跑（401 个测试；CI 断言仓库根目录没有 node_modules）", 11, MUTED, first=True)
-footer(s, 4)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
 # 第 5 页 · Agent 通信
@@ -369,7 +418,7 @@ tf.margin_left = Emu(137160)
 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
 para(tf, "五层配额（从「谁先谁得」改成「谁需要谁得」）", 12, ACCENT, True, first=True)
 para(tf, "规格 → 执行事实 → 模块接口 → 代码全文 → 需求计划（关键三件保证送达）", 11, FG, space_before=4)
-footer(s, 5)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
 # 第 6 页 · 异常处理
@@ -419,7 +468,7 @@ tf.vertical_anchor = MSO_ANCHOR.MIDDLE
 para(tf, "真实日志", 10, ACCENT, True, first=True)
 para(tf, "[CONTRACTING] 工单修复后硬失败签名未变（pm 的修复没有改变任何东西），不再重复重试，转逃生流程 → 带债通过（受影响需求 3 条）",
      11, MUTED, space_before=2)
-footer(s, 6)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
 # 第 7 页 · 可观测性
@@ -466,7 +515,7 @@ para(tf, "靶场：45 个样本（30 注入 + 15 干净对照）", 13, ACCENT, T
 para(tf, "TP 30    FN 0    FP 0    TN 15    严重度不符 0", 18, FG, True, space_before=8)
 para(tf, "「干净通过率」比「检出率」更重要：一条会对好代码报警的检查，会让角色学会糊弄它 —— 此后所有真报都会被降权。",
      11, MUTED, space_before=6)
-footer(s, 7)
+footer(s)
 
 # ══════════════════════════════════════════════════════════════
 # 第 8 页 · 结论
@@ -507,8 +556,8 @@ tf = p.text_frame
 tf.word_wrap = True
 tf.margin_left = Emu(182880)
 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-para(tf, "下面是它跑出来的真实系统，以及它在生成过程中自己报过的两个问题。", 13, ACCENT, True, first=True)
-footer(s, 8)
+para(tf, "接下来是现场真实运行（3 分钟）—— 不播录屏，直接跑；产物与证据都在仓库里，可当场复核。", 13, ACCENT, True, first=True)
+footer(s)
 
 out = r"E:\github\agentforge\docs\competition\AgentForge-赛道B.pptx"
 prs.save(out)
