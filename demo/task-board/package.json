@@ -1,0 +1,15 @@
+{
+  "name": "task-board",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node tests/tasks.test.ts",
+    "start": "node src/api/server.ts"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "@types/node": "^26.0.0"
+  }
+}
