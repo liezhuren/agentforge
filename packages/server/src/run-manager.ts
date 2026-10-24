@@ -15,7 +15,7 @@ import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { DecisionLog, EventBus, Logger, silentLogger, type ArtifactId, type ArtifactKind, type DirectiveRecord, type ForgeEvent, type ProjectProfile } from '../../core/src/index.ts';
+import { DecisionLog, EventBus, Logger, readJsonOrNull, silentLogger, type ArtifactId, type ArtifactKind, type DirectiveRecord, type ForgeEvent, type ProjectProfile } from '../../core/src/index.ts';
 import { MockProvider } from '../../llm/src/index.ts';
 import { buildLlm, loadConfigFile, type ForgeConfig } from '../../llm/src/index.ts';
 import { BudgetTracker, type BudgetSnapshot } from '../../llm/src/budget.ts';
@@ -24,6 +24,7 @@ import { createBoundRoleRunners, createRoleRunners } from '../../roles/src/index
 import { SemanticVerifier } from '../../roles/src/verify.ts';
 import { Orchestrator, type RunSummary } from '../../orchestrator/src/orchestrator.ts';
 import { deriveProfile } from '../../orchestrator/src/cli-run.ts';
+import { seedLlmWorkspace } from '../../orchestrator/src/llm-workspace.ts';
 import {
   DEMO_PROJECT_NAME,
   DEMO_SCENARIOS,
@@ -522,7 +523,32 @@ export class RunManager {
     const verifier = new SemanticVerifier({ provider: built.roleProviders.test, logger: this.logger });
 
     // 工作区若已有项目（含 package.json 脚本），按其真实工具链配置锚点；
-    // 没有就如实置空，让 A4/A5 报 SKIPPED 而不是伪造通过。
+    // 没有就 **替他预置一份工具链契约**（typecheck / test / start + healthUrl）。
+    //
+    // ⚠️ 以前这里是「没有就如实置空，让 A4/A5 报 SKIPPED」——
+    // 那个原则没错（不伪造通过），但**用错了地方**：
+    // 从控制台起的真实 LLM run 拿到的永远是空目录，于是 A4/A5/A6 必然全 SKIPPED，
+    // 等于悄悄放弃了「能不能编译 / 测试过没过 / 服务能不能起来」这三条最硬的检查。
+    // 界面上只有一行小字警告，而 run 会一路跑到 DELIVERY 看起来"完成了"。
+    //
+    // 实测（2026-10-24）：GUI 起的 run 全是这个症状；我自己也手滑过一次同样的错。
+    // 所以预置改成**运行的一部分**：默认给一份带真实命令的空工具链（不含任何应用代码），
+    // 并通过 warnings 明确告诉用户「我替你预置了什么、端口是多少」。
+    const seededWarnings: string[] = [];
+    const pkgPath = join(workspace, 'package.json');
+    const pkg = await readJsonOrNull<{ scripts?: Record<string, string> }>(pkgPath);
+    const hasScripts = Boolean(pkg?.scripts?.typecheck || pkg?.scripts?.test || pkg?.scripts?.start);
+    if (!hasScripts) {
+      const seeded = await seedLlmWorkspace(workspace, {
+        onLog: (line) => this.logger.info(`[预置] ${line}`),
+      });
+      seededWarnings.push(
+        `工作区原本没有工具链（没有 typecheck/test/start 脚本），已自动预置：` +
+          `A4 会真跑 tsc、A5 会真跑 node run-tests.mjs、A6 会探 http://127.0.0.1:${seeded.port}/health。` +
+          '（预置只写工具链契约，不写任何应用代码。）',
+      );
+    }
+
     const derived = await deriveProfile(workspace, 'agentforge-project');
 
     return {
@@ -533,7 +559,7 @@ export class RunManager {
       provider: built.roleProviders.pm,
       probes: built.probes,
       models: built.roleModels as unknown as Record<string, string>,
-      warnings: [...built.warnings, ...derived.notes],
+      warnings: [...built.warnings, ...seededWarnings, ...derived.notes],
       budgetTracker: built.budget,
       recorderPath: built.recorder?.path ?? null,
       humanAvailable: false,
