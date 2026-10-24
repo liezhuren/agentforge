@@ -17,3 +17,10 @@
 *.png binary
 *.ico binary
 *.woff2 binary
+
+# Windows 批处理与 PowerShell 脚本必须保持 CRLF：
+# cmd.exe 与 PowerShell 5.1 对 LF-only 的脚本会切错 token
+# （实测：setlocal 被读成 'local'，powershell 被读成 'le'）。
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
