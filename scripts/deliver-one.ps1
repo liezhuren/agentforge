@@ -29,7 +29,11 @@ param(
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-$ErrorActionPreference = 'Stop'
+# ⚠️ 不要用 'Stop'：PowerShell 会把**原生命令写到 stderr 的任何一行**当成致命错误。
+# cli-run 每次启动都会往 stderr 打印一行「.env：…注入 1 个变量」，
+# 于是脚本在 [2/3] 刚启动 node 就被 NativeCommandError 打断，run 根本没跑起来。
+# 所以这里用 'Continue'，并且**用退出码判断成败**（下面每一处都显式检查 $LASTEXITCODE）。
+$ErrorActionPreference = 'Continue'
 $env:PATH = 'C:\Program Files\nodejs;' + $env:PATH
 $root = 'E:\github\agentforge'
 Set-Location $root
@@ -61,7 +65,11 @@ Write-Host "brief: $BriefFile ($($brief.Length) chars)"
 Write-Host ("-" * 60)
 $log = Join-Path $root "workspace\course\$Name-run.log"
 New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
-& node packages/orchestrator/src/cli-run.ts --name $Name --brief $brief 2>&1 | Tee-Object -FilePath $log
+# node 的 stderr 直接进文件，**不进管道** —— 否则 PowerShell 会把它渲染成
+# 一堆 NativeCommandError（cli-run 每次启动都往 stderr 打一行 .env 提示）。
+# stdout 仍走管道，所以进度照样实时可见。
+$errLog = Join-Path $root "workspace\course\$Name-run.err.log"
+& node packages/orchestrator/src/cli-run.ts --name $Name --brief $brief 2>> $errLog | Tee-Object -FilePath $log
 $code = $LASTEXITCODE
 Write-Host ("-" * 60)
 
