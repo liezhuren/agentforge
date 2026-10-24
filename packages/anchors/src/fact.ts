@@ -1256,7 +1256,50 @@ export const A7: Anchor = {
       });
     } else {
       const webText = stripCodeComments(await concatModules(ctx, webModules));
-      for (const m of webText.matchAll(/['"`](\/api\/[A-Za-z0-9_\-/{}:.]*)['"`]/g)) calledPaths.add(m[1]);
+      /**
+       * ⚠️ 拼接出来的路径**不能直接拿去比对契约**。
+       *
+       * 实测（cb-13，2026-10-24）：前端写的是
+       *   `fetch('/api/comments/' + id + '/replies')`
+       * 而我们只截到第一个字面量片段 `/api/comments/`，
+       * 于是报「前端调用了契约中未声明的端点 `/api/comments/`」——
+       * 而那个端点**根本不存在，也不该存在**：完整路径是 `/api/comments/{id}/replies`，
+       * 契约里声明得好好的。
+       *
+       * 这一条假失败让 cb-13 的 REVIEW 连续两轮被判 A7:FAIL（硬失败），
+       * 每轮因为它打回、返工、再失败 —— 而前端并没有做错任何事。
+       *
+       * 判据：字面量的紧邻位置出现 `+`（拼接）或 `${`（模板插值）时，
+       * 它只是一个**前缀片段**，静态拿不到完整路径，于是：
+       *   - 不做契约比对（避免误判）
+       *   - 但**要报出来**（warn），因为「静态验证不了」不等于「验证通过」
+       */
+      const fragments: string[] = [];
+      for (const m of webText.matchAll(/['"`](\/api\/[A-Za-z0-9_\-/{}:.]*)['"`]/g)) {
+        const at = m.index ?? 0;
+        const before = webText.slice(Math.max(0, at - 12), at);
+        const after = webText.slice(at + m[0].length, at + m[0].length + 12);
+        const isFragment = /\+\s*$/.test(before) || /^\s*\+/.test(after) || /^\s*\$\{/.test(after);
+        // 模板字符串本身已在字面量内部被 ${ 截断，这里一并算作片段
+        if (isFragment || after.startsWith('$')) {
+          fragments.push(m[1]!);
+          continue;
+        }
+        calledPaths.add(m[1]!);
+      }
+      if (fragments.length > 0) {
+        const unique = [...new Set(fragments)];
+        findings.push({
+          code: 'path-fragment-unverifiable',
+          severity: 'warn',
+          message:
+            `前端有 ${unique.length} 处端点路径是**拼接出来的**（${unique.slice(0, 4).join('、')}${unique.length > 4 ? ' …' : ''}），` +
+            '静态只能看到前缀片段，无法与契约逐一比对 —— 未验证 ≠ 通过。' +
+            '（这不是缺陷；要让它可验证，请把完整路径写成单个字面量，或用契约生成的 API_PATHS 常量。）',
+          targetRole: 'frontend',
+          data: { fragments: unique },
+        });
+      }
       for (const called of calledPaths) {
         const declared = openapiPaths.some((p) => normalizePath(p) === normalizePath(called));
         if (!declared) {

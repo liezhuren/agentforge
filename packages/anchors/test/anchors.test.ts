@@ -1620,3 +1620,51 @@ test('🔴 A7：paths 里的结构性键 → warn 而非失败，且不吞掉真
     await f.cleanup();
   }
 });
+test('🔴 A7：前端用拼接拼路径时，不许判成「未声明端点」（cb-13 的假失败）', async () => {
+  const f = await makeFixture();
+  try {
+    await seedFrozenContract(f, ['/api/comments/{id}/replies']);
+    // 真实产物的写法：完整路径由拼接得到，静态只能看到前缀 '/api/comments/'
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'frontend',
+      scope: 'web',
+      content: {
+        files: [
+          {
+            path: 'src/web/page.ts',
+            content:
+              "export async function reply(id: string, body: string) {\n" +
+              "  return fetch('/api/comments/' + id + '/replies', { method: 'POST', body });\n" +
+              '}\n',
+          },
+        ],
+      },
+    });
+    // 后端也把端点真的实现了，避免其他检查干扰
+    await f.store.put({
+      kind: 'CodeModule',
+      producer: 'backend',
+      scope: 'api',
+      content: {
+        files: [
+          { path: 'src/api/comments.ts', content: "export const ROUTES = ['/api/comments/{id}/replies'];\n" },
+        ],
+      },
+    });
+
+    const r = await runOne(f, 'A7');
+    const codes = r.findings.map((x) => x.code);
+
+    assert.ok(
+      !codes.includes('undeclared-endpoint'),
+      '拼接出来的前缀不是端点，不该判成契约漂移 —— 这条假失败曾让 cb-13 连续两轮 REVIEW 失败',
+    );
+    const frag = r.findings.find((x) => x.code === 'path-fragment-unverifiable');
+    assert.ok(frag, '但也不能静默跳过：静态验证不了，必须如实报出来');
+    assert.equal(frag!.severity, 'warn');
+    assert.equal(frag!.targetRole, 'frontend');
+  } finally {
+    await f.cleanup();
+  }
+});

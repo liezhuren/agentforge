@@ -133,9 +133,26 @@ export async function verifyEvidence(ref: EvidenceRef, ctx: AnchorContext): Prom
     if (ref.expect) {
       const slice = lines.slice(ref.startLine - 1, ref.endLine).join('\n');
       if (!slice.includes(ref.expect)) {
+        /**
+         * 把「你错了」变成「你错在哪」。
+         *
+         * 实测（cb-15，2026-10-24）：同一轮里有 **15 条** `evidence-invalid`，
+         * 全部是这一条原因 —— 验证器把 `expect` 写成了**描述句**
+         * （如 `handleHealth 写 {status:'ok'} 且状态码 200`），
+         * 而这里要求的是**逐字子串**。它下一轮只会换个说法再错一次，
+         * 因为原消息没告诉它"这段代码实际长什么样"。
+         *
+         * 附上区间实际内容之后，模型能自己发现「我该摘原文而不是写总结」——
+         * **判定标准没有放宽**，只是失败变得可自纠。
+         */
+        const actual = slice.replace(/\s+/g, ' ').trim().slice(0, 200);
         return {
           ok: false,
-          reason: `引用的行区间未包含所声称的内容 ${JSON.stringify(ref.expect)}：${ref.path}:${ref.startLine}-${ref.endLine}`,
+          reason:
+            `引用的行区间未包含所声称的内容 ${JSON.stringify(ref.expect)}：${ref.path}:${ref.startLine}-${ref.endLine}。` +
+            `该区间实际内容是 ${JSON.stringify(actual)}。` +
+            '（`expect` 必须是**从该区间逐字复制**的原文片段，不能写成描述句；' +
+            '若这段代码确实不包含你要证明的东西，请换区间，或改用 artifact 证据。）',
         };
       }
     }

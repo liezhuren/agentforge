@@ -865,6 +865,58 @@ export const SAMPLES: BenchSample[] = [
     },
   },
 
+  {
+    id: 'A7-12-clean-concatenated-path',
+    group: 'A7 契约一致性',
+    title: '【对照】前端用字符串拼接拼出端点路径',
+    injection:
+      '无 —— 对照组。前端写 `fetch("/api/comments/" + id + "/replies")`，' +
+      '静态只能看到前缀片段 `/api/comments/`。这条样本守的是「不许把前缀当成端点去比对契约」——' +
+      'cb-13 就是在这里被误判成契约漂移，连续两轮 REVIEW 失败',
+    anchors: ['A7'],
+    expect: { kind: 'clean' },
+    build: async (ctx) => {
+      await ctx.pkg({ name: 'bench' });
+      const contract = {
+        ...GOOD_CONTRACT,
+        openapi: { openapi: '3.1.0', paths: { '/api/tasks': {}, '/api/tasks/{id}/comments': {} } },
+      };
+      const id = await ctx.artifact({ kind: 'Contract', producer: 'pm', content: contract });
+      await ctx.store.freeze(id);
+      await ctx.file('shared/contract/types.ts', GENERATED_TYPES);
+      await ctx.artifact({
+        kind: 'CodeModule',
+        producer: 'backend',
+        scope: 'api',
+        content: {
+          files: [
+            {
+              path: 'src/api/routes.ts',
+              content:
+                "import type { Task } from '../../shared/contract/types.ts';\n\nexport const ROUTES = ['/api/tasks', '/api/tasks/{id}/comments'];\nexport const list = (): Task[] => [];\n",
+            },
+          ],
+        },
+      });
+      await ctx.artifact({
+        kind: 'CodeModule',
+        producer: 'frontend',
+        scope: 'web',
+        content: {
+          files: [
+            {
+              path: 'src/web/client.ts',
+              content:
+                "import type { Task } from '../../shared/contract/types.ts';\n\n" +
+                'export const reply = (id: string, body: string) =>\n' +
+                "  fetch('/api/tasks/' + id + '/comments', { method: 'POST', body });\n",
+            },
+          ],
+        },
+      });
+    },
+  },
+
   // ── B1 目标达成 ──────────────────────────────────────────────
   {
     id: 'B1-01-fabricated-evidence',

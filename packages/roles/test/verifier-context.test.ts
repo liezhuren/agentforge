@@ -203,3 +203,27 @@ test('上下文：机械检查事实必须进上下文（否则验证者只能�
     await f.cleanup();
   }
 });
+
+/**
+ * 🔴 证据的 `expect` 必须是**逐字原文**，不能是描述句。
+ *
+ * 这条来自 cb-15（2026-10-24）的实测：同一轮有 **15 条** `evidence-invalid`，
+ * 原因全部一样 —— 验证器引用的文件与行号都对，但把 `expect` 写成了
+ * 「handleHealth 写 {status:'ok'} 且状态码 200」这种描述，
+ * 而机械核验要求它是该行区间的**逐字子串**，于是整条判定作废。
+ *
+ * 这是**规则与指令不匹配**，不是模型能力问题：规则一直没变，
+ * 但提示词里从没告诉它「要照抄」。修法只能是让规则可见。
+ */
+test('🔴 提示词必须要求 expect 逐字照抄，并给出正反例', async () => {
+  const f = await fixture();
+  try {
+    const { messages } = buildVerifierContext(f.ctx());
+    const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+    assert.match(sys, /逐字/, '必须明确要求逐字复制');
+    assert.match(sys, /描述句/, '必须点名「不要写成描述句」这个具体错误');
+    assert.match(sys, /expect/, '必须点名 expect 字段');
+  } finally {
+    await f.cleanup();
+  }
+});
