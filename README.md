@@ -8,6 +8,8 @@
 
 只要 **Node ≥ 24**，不需要 `npm install`。
 
+**产物可见**：[`brief-s3`](docs/competition/evidence/brief-s3/) —— 一次真实 LLM 完整交付的证据包（14/14 需求达成、55 条逐字核验的证据、7 次门禁），双击里面的 `证据卡.html` 就能看，不用装环境、不用联网。
+
 ---
 
 ## 功能
