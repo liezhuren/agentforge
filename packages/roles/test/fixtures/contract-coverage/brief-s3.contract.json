@@ -1,0 +1,433 @@
+{
+  "version": 1,
+  "openapi": {
+    "openapi": "3.0.3",
+    "paths": {
+      "/health": {
+        "get": {
+          "method": "GET",
+          "path": "/health",
+          "operationId": "getHealth",
+          "summary": "健康检查",
+          "responses": {
+            "200": {
+              "description": "服务健康",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HealthResponse"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "服务内部错误",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/": {
+        "get": {
+          "method": "GET",
+          "path": "/",
+          "operationId": "getIndexPage",
+          "summary": "返回单页任务看板 HTML（零第三方依赖，内联脚本通过 fetch 调用 /api/tasks 系列接口）",
+          "responses": {
+            "200": {
+              "description": "可直接使用的 HTML 页面，Content-Type 含 text/html",
+              "content": {
+                "text/html": {
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/tasks": {
+        "get": {
+          "method": "GET",
+          "path": "/api/tasks",
+          "operationId": "listTasks",
+          "summary": "列出全部任务；可按 status 过滤，未提供 status 时返回所有状态",
+          "parameters": [
+            {
+              "name": "status",
+              "in": "query",
+              "required": false,
+              "description": "按状态过滤；取值不在枚举内时不匹配任何任务，返回 200 与空数组",
+              "schema": {
+                "$ref": "#/components/schemas/TaskStatus"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "任务数组（可能为空）",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "method": "POST",
+          "path": "/api/tasks",
+          "operationId": "createTask",
+          "summary": "创建任务；title 缺失或为空字符串返回 400 且不产生新任务",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateTaskRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "创建成功，返回新建任务（status 缺省为 'todo'）",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "title 缺失或为空字符串，或请求体不是合法 JSON 对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/tasks/{id}": {
+        "patch": {
+          "method": "PATCH",
+          "path": "/api/tasks/{id}",
+          "operationId": "updateTask",
+          "summary": "更新任务状态；id 不存在返回 404",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateTaskRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "更新成功，返回更新后的任务对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "status 缺失或取值不在 'todo' | 'doing' | 'done' 之内",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "id 对应的任务不存在",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "method": "DELETE",
+          "path": "/api/tasks/{id}",
+          "operationId": "deleteTask",
+          "summary": "删除任务；id 不存在返回 404",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "删除成功，返回被删除的任务对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "id 对应的任务不存在",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "HealthResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok"
+              ]
+            }
+          }
+        },
+        "TaskStatus": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "done"
+          ]
+        },
+        "Task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "title",
+            "status",
+            "createdAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "服务内唯一，非空字符串"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus"
+            },
+            "createdAt": {
+              "type": "string",
+              "description": "可被 Date.parse 解析为有效时间的字符串（ISO 8601）"
+            }
+          }
+        },
+        "CreateTaskRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "description": "必填且非空，空白字符串视为 400"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus",
+              "description": "可选，缺省为 'todo'"
+            }
+          }
+        },
+        "UpdateTaskRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus"
+            }
+          }
+        },
+        "ErrorResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "string",
+              "description": "人类可读的错误说明，响应体始终是可解析的 JSON"
+            }
+          }
+        }
+      }
+    }
+  },
+  "jsonSchemas": {
+    "HealthResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HealthResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok"
+          ]
+        }
+      }
+    },
+    "TaskStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TaskStatus",
+      "type": "string",
+      "enum": [
+        "todo",
+        "doing",
+        "done"
+      ]
+    },
+    "Task": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Task",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "服务内唯一，非空字符串"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/jsonSchemas/TaskStatus"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601 时间字符串，Date.parse 可得有限数值"
+        }
+      }
+    },
+    "CreateTaskRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CreateTaskRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/jsonSchemas/TaskStatus"
+        }
+      }
+    },
+    "UpdateTaskRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UpdateTaskRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/jsonSchemas/TaskStatus"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ErrorResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "generatedTypesPath": "src/shared/contract-types.ts",
+  "changeRequests": []
+}

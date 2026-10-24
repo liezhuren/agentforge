@@ -1,0 +1,196 @@
+{
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "接口契约：/health 与 /api/tasks 端点及数据模型 schema",
+      "owner": "pm",
+      "scope": "shared",
+      "dependsOn": [],
+      "requirementIds": [
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008",
+        "R-009",
+        "R-010",
+        "R-011",
+        "R-012",
+        "R-013",
+        "R-014"
+      ],
+      "deliverable": "Contract",
+      "acceptance": [
+        "契约中声明的 HTTP 端点集合恰为 {\"GET /health\", \"GET /api/tasks\", \"POST /api/tasks\", \"PATCH /api/tasks/{id}\", \"DELETE /api/tasks/{id}\"}，且与 T-003 的 contractPaths 完全一致",
+        "契约中 /health 的 GET 响应定义为 200 + HealthResponse，HealthResponse.status 为字面量 'ok'（类型 string 且取值为 'ok'）",
+        "契约中 /api/tasks 的 GET 定义可选查询参数 status（取值枚举 'todo'|'doing'|'done'），响应 200 + TaskList；TaskList 类型为 Task 的数组",
+        "契约中 /api/tasks 的 POST 请求体为 CreateTaskRequest（title: string 必填，status: TaskStatus 可选），响应分支包含 201 + Task 与 400 + ErrorResponse",
+        "契约中 /api/tasks/{id} 的 PATCH 请求体为 UpdateTaskRequest（title? 与 status? 均可选），响应分支包含 200 + Task 与 404 + ErrorResponse",
+        "契约中 /api/tasks/{id} 的 DELETE 响应分支包含 204（无响应体）与 404 + ErrorResponse",
+        "契约中 Task 的所有字段均有明确类型：id: string、title: string、status: TaskStatus、createdAt: string，且四个字段均为必填",
+        "契约中 TaskStatus 定义为字符串字面量联合 'todo' | 'doing' | 'done'",
+        "契约中 ErrorResponse 含 error: string 字段，且 400/404 响应体都引用该 schema",
+        "契约中每个路径都标注了 HTTP 方法与响应状态码，不存在无方法或无响应的路径条目"
+      ],
+      "contractPaths": [
+        "/health",
+        "/api/tasks",
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "TaskList",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "后端：任务模型与内存存储模块（src/tasks/model.ts、src/tasks/store.ts）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001"
+      ],
+      "requirementIds": [
+        "R-003",
+        "R-004",
+        "R-015",
+        "R-017",
+        "R-018"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "`npm run typecheck` 退出码为 0，且 src/tasks/model.ts 与 src/tasks/store.ts 参与类型检查无错误",
+        "对 src 目录下所有 .ts 文件正则扫描 import/export 说明符：以 '.' 开头但不以 '.ts' 结尾的匹配数为 0",
+        "对 src 目录下所有 .ts 文件扫描数据库/驱动模块 import（mysql|pg|mongodb|sqlite|better-sqlite3|prisma）匹配数为 0；扫描 writeFile|writeFileSync|appendFile 调用匹配数为 0",
+        "对 src 目录下所有 .ts 文件扫描 import 说明符：非相对路径且非 Node 内置模块（无 node: 前缀且不在内置模块名单）的匹配数为 0",
+        "单元测试直接 import 存储工厂并断言：create({title:'x'}) 返回对象满足 typeof id==='string' && id.length>0、title==='x'、status==='todo'、new Date(createdAt).toISOString()===createdAt",
+        "单元测试断言：create({title:'a'}) 与 create({title:'b', status:'done'}) 之后，list() 长度为 2，list({status:'done'}) 长度为 1 且唯一元素 status==='done'，list({status:'todo'}) 长度为 1",
+        "单元测试断言：update('missing-id', {title:'x'}) 返回 null；remove('missing-id') 返回 false；对已存在 id 调用 remove 后 has(id) 为 false",
+        "单元测试断言：update(已存在id, {title:'renamed'}) 后该任务 title==='renamed' 且 createdAt 与更新前严格相等"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "UpdateTaskRequest"
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "后端：HTTP 服务与路由（src/server.ts、src/app.ts、src/index.ts），入口顶层 listen 127.0.0.1:8790",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001",
+        "T-002"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008",
+        "R-009",
+        "R-010",
+        "R-011",
+        "R-012",
+        "R-013",
+        "R-014",
+        "R-017",
+        "R-018",
+        "R-020"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "src/index.ts 在模块顶层直接调用 server.listen(8790, '127.0.0.1')（不是仅导出 createServer/startServer）；执行 `npm start` 后 5 秒内 GET http://127.0.0.1:8790/health 返回状态码 200",
+        "GET /health 响应头 Content-Type 包含 application/json，JSON.parse(响应体).status === 'ok'",
+        "POST /api/tasks 请求体 {\"title\":\"write tests\"} → 状态码 201，响应体 title==='write tests'、status==='todo'，随后 GET /api/tasks 返回数组中包含该 id",
+        "POST /api/tasks 请求体 {} → 状态码 400；请求体 {\"title\":\"\"} → 状态码 400；两次请求前后 GET /api/tasks 数组长度保持不变",
+        "GET /api/tasks → 状态码 200，Array.isArray(JSON.parse(响应体)) 为 true，每个元素 id/title/status/createdAt 均存在且类型符合 R-003",
+        "GET /api/tasks?status=todo 返回数组所有元素 status==='todo'；GET /api/tasks?status=done 返回数组所有元素 status==='done'；创建 A(todo) 与 B(done) 后两个过滤结果互不包含对方 id",
+        "PATCH /api/tasks/{id} 请求体 {\"title\":\"renamed\"} → 状态码 2xx，随后 GET /api/tasks 中该 id 的 title==='renamed' 且 createdAt 与创建时返回的值严格相等",
+        "PATCH /api/tasks/{id} 请求体 {\"status\":\"done\"} → 状态码 2xx，随后 GET /api/tasks?status=done 包含该 id",
+        "PATCH /api/tasks/{不存在id} → 状态码 404，且 GET /api/tasks 数组长度与请求前一致",
+        "DELETE /api/tasks/{id} → 状态码 204，随后 GET /api/tasks 与 GET /api/tasks?status=todo 均不含该 id",
+        "DELETE /api/tasks/{不存在id} → 状态码 404；对同一不存在 id 再次 DELETE → 状态码 404；创建后 DELETE 成功再 PATCH 同 id → 状态码 404",
+        "src 目录下 .html 文件数为 0；对 src/**/*.ts 扫描 express.static|serve-static 匹配数为 0，返回 html 的 readFile 调用匹配数为 0",
+        "对 src/**/*.ts 扫描 import 说明符：以 '.' 开头但不以 '.ts' 结尾的匹配数为 0；非相对且非 Node 内置模块的匹配数为 0"
+      ],
+      "contractPaths": [
+        "/health",
+        "/api/tasks",
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "TaskList",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "测试：直接 import 服务模块的自动化测试套件（tests/*.test.ts），覆盖 health/201/400/列表过滤/PATCH/404/删除后 404",
+      "owner": "test",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-002",
+        "R-007",
+        "R-008",
+        "R-009",
+        "R-010",
+        "R-011",
+        "R-012",
+        "R-013",
+        "R-014",
+        "R-016",
+        "R-017",
+        "R-018",
+        "R-019",
+        "R-020"
+      ],
+      "deliverable": "TestSuite",
+      "acceptance": [
+        "执行 `npm run test` 退出码为 0",
+        "测试代码中存在断言 GET /health 状态码为 200 且 JSON.parse(body).status === 'ok' 的用例",
+        "测试代码中存在断言 POST /api/tasks（含 title）状态码严格等于 201 的用例，并断言返回体 status === 'todo'",
+        "测试代码中存在断言 POST /api/tasks 请求体 {} 与 {\"title\":\"\"} 均返回 400 且列表长度不变的用例",
+        "测试代码中存在断言 GET /api/tasks 返回数组，以及 GET /api/tasks?status=todo|done 过滤结果不含另一状态 id 的用例",
+        "测试代码中存在断言 PATCH 修改 title 后该 id 的 title 变更且 createdAt 不变的用例，以及 PATCH 修改 status 为 done 后 ?status=done 命中该 id 的用例",
+        "测试代码中存在断言 PATCH 不存在 id 返回 404、DELETE 不存在 id 返回 404 的用例",
+        "测试代码中存在断言 DELETE 成功后同一 id 的 GET 列表不含该 id、PATCH 返回 404、再次 DELETE 返回 404 的用例",
+        "测试代码通过 import 相对路径的 src 模块（如 ../src/app.ts、../src/tasks/store.ts）并获得被测对象，无通过命令行启动服务的步骤",
+        "对测试目录 .ts 文件扫描：import 'node:child_process' 或 'child_process' 匹配数为 0；spawn( / exec( / execSync( 调用匹配数为 0",
+        "对测试目录 .ts 文件扫描 import 说明符：以 '.' 开头但不以 '.ts' 结尾的匹配数为 0；非相对且非 Node 内置模块的匹配数为 0",
+        "`npm run typecheck` 退出码为 0（测试目录纳入类型检查，无 TS2835 等模块解析错误）"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "TaskList",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    }
+  ]
+}

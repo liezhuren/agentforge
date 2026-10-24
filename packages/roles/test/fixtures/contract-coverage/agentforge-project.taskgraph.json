@@ -1,0 +1,247 @@
+{
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "产出前后端唯一事实来源的接口契约（/health、/api/tasks 创建与列出的数据模型）",
+      "owner": "pm",
+      "scope": "shared",
+      "dependsOn": [],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008"
+      ],
+      "deliverable": "Contract",
+      "acceptance": [
+        "契约工件显式列出 3 个操作：POST /api/tasks、GET /api/tasks、GET /health，每个操作都写明请求体 schema（无请求体的写 null 或省略并说明）与响应状态码与响应体 schema",
+        "契约中 Task schema 为 object 且 required 含 id、title、status、createdAt，四个字段的 type 均为 string",
+        "契约中 TaskCreateRequest schema 为 object 且 required 只含 title，title 的 type 为 string",
+        "契约写明 POST /api/tasks 的成功状态码为 201、输入非法时为 400；GET /api/tasks 的状态码为 200 且响应体为 Task 数组（空列表时为空数组）；GET /health 返回 2xx 且响应体 schema 的 status 为常量 'ok'",
+        "契约中的端点集合（去重后）与 TaskGraph 内所有 deliverable=CodeModule 的任务 contractPaths 的并集完全相等，无遗漏无多余",
+        "契约不定义 R-004 未要求的错误响应体结构，也不定义 status 字段的取值枚举与任何 R-001~R-008 未提到的端点"
+      ],
+      "contractPaths": [
+        "/health",
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskCreateTask",
+        "HealthStatus"
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "实现 HTTP 应用骨架与 GET /health 端点（可注入端口的 createServer）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001"
+      ],
+      "requirementIds": [
+        "R-005",
+        "R-007"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "src/app.ts 导出 createServer 工厂函数，接受可选的监听端口/主机参数或返回未 listen 的 http.Server，测试可 import 后自行 listen 到 0 端口",
+        "对 createServer 启动的实例发 GET /health，断言响应状态码 >=200 且 <=299",
+        "断言 GET /health 响应体 JSON 解析成功且 body.status === 'ok'",
+        "npm run typecheck 退出码等于 0",
+        "对 src/app.ts 全文做正则匹配 from '(\\.{1,2}/[^']+)'，每个捕获组均以 .ts 结尾",
+        "src/app.ts 的 import 来源仅匹配 ^node: 或 ^\\.{1,2}/，无第三方包"
+      ],
+      "contractPaths": [
+        "/health"
+      ],
+      "contractSchemas": [
+        "HealthStatus"
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "实现任务数据模型与进程内存储模块（创建/列出的共享状态）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-003",
+        "R-007"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "src/task-store.ts 导出 createTask(title: string) 与 listTasks()，且返回/存储的任务对象形状与契约 Task schema 一致（id、title、status、createdAt）",
+        "直接 import 后调用 createTask('写周报')，断言 typeof r.id === 'string' && r.id.length > 0、r.title === '写周报'、typeof r.status === 'string'、Number.isNaN(Date.parse(r.createdAt)) === false",
+        "连续调用 createTask('A') 与 createTask('B')，断言两次返回的 id 不相等",
+        "新建的 store 实例调用 listTasks() 返回 Array.isArray === true 且 length === 0",
+        "同一 store 实例创建 2 个任务后 listTasks() 返回长度 2，且其 id 集合与两次 createTask 返回的 id 集合完全相等（Set 比对）",
+        "npm run typecheck 退出码等于 0，且 src/task-store.ts 的相对导入均以 .ts 结尾"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "Task",
+        "TaskCreateRequest"
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "实现 POST /api/tasks：创建任务与 title 输入校验",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-002",
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-003",
+        "R-004"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "对 createServer 实例 POST /api/tasks 携带 {\"title\":\"写周报\"}，断言状态码 === 201，且 body.title === '写周报'、body.id 为非空字符串、body.status 为字符串、body.createdAt 可被 Date.parse 解析",
+        "连续两次 POST 创建 title 分别为 'A'、'B'，断言两次 body.id 不相等",
+        "POST {\"title\":\"一致性\"} 后 GET /api/tasks，断言列表中存在 title === '一致性' 的元素且其 id 与 POST 响应体 id 严格相等",
+        "分别 POST {}、{\"title\":\"\"}、{\"title\":\"   \"}、{\"title\":123}，四次断言状态码均 === 400",
+        "上述每个 400 请求前后各调用一次 GET /api/tasks 并记录 body.length，断言前后长度相等（未新增任务）",
+        "对 src 下源码静态检查：不出现 child_process 的导入与 spawn/exec 的调用",
+        "npm run typecheck 退出码等于 0"
+      ],
+      "contractPaths": [
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskCreateRequest"
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "实现 GET /api/tasks：列出全部任务（与创建共享同一 store）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003",
+        "T-004"
+      ],
+      "requirementIds": [
+        "R-002",
+        "R-003"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "在未创建任何任务的实例上 GET /api/tasks，断言状态码 === 200 且 Array.isArray(body) === true 且 body.length === 0（不是 404、不是 null）",
+        "创建 2 个任务后 GET /api/tasks，断言状态码 === 200、Array.isArray(body) === true、body.length === 2",
+        "断言列表元素的 id 集合与两次创建返回的 id 集合用 Set 比对完全相等",
+        "断言列表元素与创建接口返回的对象字段同构：每个元素都满足 typeof id === 'string' && typeof title === 'string' && typeof status === 'string' && Number.isNaN(Date.parse(createdAt)) === false",
+        "npm run typecheck 退出码等于 0"
+      ],
+      "contractPaths": [
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task"
+      ]
+    },
+    {
+      "id": "T-006",
+      "title": "实现入口文件 src/index.ts：被直接执行时在顶层 listen 127.0.0.1:8787",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-002"
+      ],
+      "requirementIds": [
+        "R-005",
+        "R-006",
+        "R-007"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "对 src/index.ts 做静态检查：文件中存在顶层（不在函数体内）的 .listen( 调用，且监听地址包含 127.0.0.1、端口为 8787",
+        "npm start 启动后，GET http://127.0.0.1:8787/health 返回状态码在 200-299 之间且 body.status === 'ok'（运行期锚点，不允许出现进程在就绪前退出）",
+        "src/index.ts 中所有相对导入匹配 from '(\\.{1,2}/[^']+)' 且每个捕获组以 .ts 结尾",
+        "npm run typecheck 退出码等于 0"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "HealthStatus"
+      ]
+    },
+    {
+      "id": "T-007",
+      "title": "编写可被 npm run test 真实执行的测试套件（覆盖创建、列出、校验、健康检查）",
+      "owner": "test",
+      "scope": "shared",
+      "dependsOn": [
+        "T-004",
+        "T-005",
+        "T-006"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-008"
+      ],
+      "deliverable": "TestSuite",
+      "acceptance": [
+        "测试文件数量 > 0（src 下存在 *.test.ts），且 npm run test 退出码 === 0",
+        "测试直接 import createServer / task-store 模块并对返回值与 HTTP 响应做断言，静态检查测试文件不出现 child_process 的导入与 spawn/exec 的调用",
+        "至少一个测试用例覆盖 R-001 创建成功路径（断言状态码 201 与 id/title/status/createdAt 四个字段）",
+        "至少一个测试用例覆盖 R-002 列表路径（无任务时 200 且空数组；创建 2 个后长度 2 且 id 集合相等）",
+        "至少一个测试用例覆盖 R-004 的四种非法输入均返回 400 且列表长度不变",
+        "至少一个测试用例覆盖 R-005 健康检查的 2xx 与 body.status === 'ok'",
+        "执行 npm run typecheck 退出码 === 0"
+      ],
+      "contractPaths": [
+        "/api/tasks",
+        "/health"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskCreateRequest",
+        "HealthStatus"
+      ]
+    },
+    {
+      "id": "T-008",
+      "title": "产出验证报告：逐条登记 R-001~R-008 验收项的判定结果与证据",
+      "owner": "test",
+      "scope": "shared",
+      "dependsOn": [
+        "T-007"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008"
+      ],
+      "deliverable": "TestReport",
+      "acceptance": [
+        "报告记录 npm run typecheck 与 npm run test 的实际退出码，两者均 === 0",
+        "报告逐条列出 R-001 ~ R-008 的每个 acceptance 条目，每条给出判定（PASS/FAIL）与可复核证据（测试用例名或命令与输出摘要）",
+        "报告中 R-006 的判定必须包含 npm start 后 GET http://127.0.0.1:8787/health 的实际状态码",
+        "报告覆盖的 requirementId 集合与 Requirement-001 的 8 条需求 id 集合完全相等，无遗漏"
+      ],
+      "contractPaths": [],
+      "contractSchemas": []
+    }
+  ]
+}

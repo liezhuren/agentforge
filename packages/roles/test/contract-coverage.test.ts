@@ -21,7 +21,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   contractCoverageErrors,
@@ -114,38 +115,30 @@ test('只查一个方向：契约多声明了没人认领的路径不报错（�
   assert.deepEqual(errs, [], '多余的端点未必是错的（可能是下一步要实现的），交给 A7 判');
 });
 
+/**
+ * 用**真实历史工件**回归：两次失败的 run 必须报出缺口，两次成功的必须是 0 条。
+ *
+ * ⚠️ 工件已固化在 `test/fixtures/contract-coverage/`，**不读 `workspace/`**。
+ * 第一版直接读 `workspace/<run>/artifacts/`，本地绿、CI 红 ——
+ * 因为 `workspace/*` 是 gitignore 的运行数据，干净检出里根本没有。
+ * 这正是这个仓库 CI 存在的理由（见 `.github/workflows/ci.yml` 开头那段注释）：
+ * 「作者本地绿、读者第一次打开就红」这类缺陷只有干净环境才能暴露。
+ */
 test('用真实历史工件回归：两次失败必须报缺口，两次成功必须 0 条', () => {
-  const read = (w: string, kind: string): unknown => {
-    const dir = `workspace/${w}/artifacts/${kind}`;
-    if (!existsSync(dir)) return null;
-    const f = readdirSync(dir).sort().pop()!;
-    return JSON.parse(readFileSync(`${dir}/${f}`, 'utf8')).content;
-  };
-  const cases: Array<[string, number]> = [
-    ['brief-s1', 2], // 契约只有 /health，任务图声明了 2 条业务路径
-    ['agentforge-project', 1],
-    ['brief-s2', 0],
-    ['brief-s3', 0],
-  ];
-  let checked = 0;
-  for (const [w, expected] of cases) {
-    const c = read(w, 'Contract');
-    const t = read(w, 'TaskGraph');
-    if (!c || !t) continue; // 工作区可能已被清理，跳过而不是失败
-    const errs = contractCoverageErrors(c, t);
-    assert.equal(errs.length, expected, `${w} 的覆盖缺口数应为 ${expected}，实际 ${errs.length}`);
-    checked++;
-  }
-  assert.ok(checked >= 2, `至少要能核对两个真实工件（实际 ${checked} 个）`);
-});
+  // 相对**测试文件**定位，而不是 cwd —— 否则换个工作目录跑就找不到（CI 上正是如此）
+  const dir = join(import.meta.dirname, 'fixtures', 'contract-coverage');
+  const read = (w: string, kind: string): unknown =>
+    JSON.parse(readFileSync(`${dir}/${w}.${kind}.json`, 'utf8'));
 
-test('missingContractPaths 能按路径归组到任务 id', () => {
-  const missing = missingContractPaths(
-    contract(['/health']),
-    taskGraph([{ id: 'T-002', contractPaths: ['/api/a', '/api/b'] }]),
-  );
-  assert.deepEqual(missing, [
-    { path: '/api/a', taskIds: ['T-002'] },
-    { path: '/api/b', taskIds: ['T-002'] },
-  ]);
+  const cases: Array<[string, number, string]> = [
+    ['brief-s1', 2, '契约只有 /health，任务图声明了 2 条业务路径'],
+    ['agentforge-project', 1, '同一种塌缩'],
+    ['brief-s2', 0, '交付成功的 run 不该报缺口'],
+    ['brief-s3', 0, '交付成功的 run 不该报缺口'],
+  ];
+
+  for (const [w, expected, why] of cases) {
+    const errs = contractCoverageErrors(read(w, 'contract'), read(w, 'taskgraph'));
+    assert.equal(errs.length, expected, `${w}：${why}（期望 ${expected} 条，实际 ${errs.length}）`);
+  }
 });

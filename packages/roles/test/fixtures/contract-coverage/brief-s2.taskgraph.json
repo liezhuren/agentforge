@@ -1,0 +1,332 @@
+{
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "发布任务看板 API 接口契约（端点、方法、状态码、数据模型）",
+      "owner": "pm",
+      "scope": "shared",
+      "dependsOn": [],
+      "requirementIds": [
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-009",
+        "R-012",
+        "R-015",
+        "R-017",
+        "R-022"
+      ],
+      "deliverable": "Contract",
+      "acceptance": [
+        "契约工件中 paths 的键集合恰为 {\"/health\",\"/api/tasks\",\"/api/tasks/{id}\",\"/api/stats\"}，且各键下的方法与 T-002/T-004/T-005/T-006/T-007/T-008 声明的 contractPaths 方法完全一致（GET /health；GET 与 POST /api/tasks；PATCH 与 DELETE /api/tasks/{id}；GET /api/stats）",
+        "契约中每个方法条目都声明成功状态码（/health 与列表/统计 200、POST 201、PATCH/DELETE 2xx）以及 400、404 错误响应，且错误响应引用 ErrorResponse schema",
+        "契约 schemas 中每个字段都有明确 type；Task 的字段集合恰为 [id,title,status,priority,createdAt]，status 枚举为 [todo,doing,done]，priority 枚举为 [low,normal,high]，createdAt 为 ISO 字符串",
+        "契约 schemas 名称集合等于本任务图所有任务 contractSchemas 的并集：{HealthResponse,Task,TaskStatus,TaskPriority,TaskList,CreateTaskRequest,UpdateTaskRequest,StatsResponse,ErrorResponse}，无遗漏无多余",
+        "契约中出现的每个路径+方法都被至少一个 owner=backend 的 CodeModule 任务的 contractPaths 认领，不存在无人实现的端点"
+      ],
+      "contractPaths": [
+        "/health",
+        "/api/tasks",
+        "/api/tasks/{id}",
+        "/api/stats"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "TaskPriority",
+        "TaskList",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "StatsResponse",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "服务骨架：HTTP 服务创建、顶层 listen 启动、/health 端点与 JSON 错误兜底",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-020",
+        "R-021",
+        "R-022"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "入口文件顶层存在生效的 listen 调用；执行 `npm start` 后 GET http://127.0.0.1:8791/health 返回 2xx 且 body.status === 'ok'，响应头 content-type 含 application/json",
+        "`npm start` 后间隔 ≥1s 连续两次 GET /health 均返回 2xx，且两次请求之间进程未退出",
+        "对未知路由（如 GET /api/tasks/__not_exist__）的响应 content-type 含 application/json，响应体可被 JSON.parse 成功解析",
+        "对 src 目录静态扫描：所有相对 import 说明符均以 .ts 结尾（TS2835 计数为 0），import 说明符仅来自 node: 内置模块或相对路径",
+        "执行 `npm run typecheck` 退出码为 0"
+      ],
+      "contractPaths": [
+        "/health"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "任务数据模型、内存存储与入参校验函数",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-002"
+      ],
+      "requirementIds": [
+        "R-003",
+        "R-004",
+        "R-018"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "创建任务后响应体 Object.keys 集合恰为 [id,title,status,priority,createdAt]，其中 typeof id === 'string' 且长度 > 0，new Date(createdAt).toISOString() === createdAt",
+        "仅传 {title:'x'} 创建时 status === 'todo' 且 priority === 'normal'；分别只传 status 或只传 priority 时，未传字段取各自默认值",
+        "title 缺失/null/空串/纯空白被判为无效，status 不在 [todo,doing,done]、priority 不在 [low,normal,high] 被判为无效（校验函数对这些输入返回无效判定）",
+        "对 src 目录静态扫描：import 说明符只来自 node: 内置模块或相对路径，不含 fs、node:fs、sqlite 或任何第三方包",
+        "同一进程内通过 POST 创建的任务在下一次 GET /api/tasks 中可立即读到（进程内内存存储，无文件或数据库写入）"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "Task",
+        "TaskStatus",
+        "TaskPriority"
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "GET /api/tasks 列表端点与 status/priority 过滤（含组合 AND）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "空存储下 GET /api/tasks 返回 200 且 Array.isArray(body) 为 true 且 body.length === 0",
+        "连续创建 3 个任务后 GET /api/tasks 返回 body.length === 3，且返回 id 集合与创建响应 id 集合完全一致",
+        "在 todo/doing/done 三条数据下 GET /api/tasks?status=doing 返回长度 1、该元素 status === 'doing'，且返回数组中所有元素 status 均等于查询值",
+        "在 low/normal/high 三条数据下 GET /api/tasks?priority=high 返回长度 1、该元素 priority === 'high'，且返回数组中所有元素 priority 均等于查询值",
+        "在 (todo,high)、(todo,low)、(doing,high) 三条数据下 GET /api/tasks?status=todo&priority=high 返回长度 1，该元素 status==='todo' 且 priority==='high'，结果中不存在与查询值不符的元素"
+      ],
+      "contractPaths": [
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskList"
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "POST /api/tasks 创建端点与 title/枚举校验（400 分支）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-004",
+        "R-009",
+        "R-010",
+        "R-011",
+        "R-022"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "POST /api/tasks {title:'写测试'} 返回 201，响应体 title === '写测试'、id 与 createdAt 非空，随后 GET /api/tasks 结果包含该 id",
+        "分别 POST {}、{title:null}、{title:''}、{title:'   '} 均返回 400，且每次失败后 GET /api/tasks 的任务总数与请求前相同",
+        "POST {title:'x',status:'blocked'} 与 POST {title:'x',priority:'urgent'} 均返回 400，两次失败后 GET /api/tasks 的任务总数与请求前相同",
+        "所有 400 响应 content-type 含 application/json，响应体可被 JSON.parse 成功解析并含错误说明字段"
+      ],
+      "contractPaths": [
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task",
+        "CreateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-006",
+      "title": "PATCH /api/tasks/{id} 局部更新端点与 404/400 分支",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-012",
+        "R-013",
+        "R-014",
+        "R-022"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "创建任务后 PATCH /api/tasks/{id} {status:'doing'} 返回 200-299，响应体 status === 'doing' 且 id、createdAt 与创建时一致",
+        "再 PATCH {title:'新标题',priority:'high'} 返回 200-299，响应体 title === '新标题'、priority === 'high' 且 status 仍为 'doing'（未传字段不被覆盖）",
+        "随后 GET /api/tasks 中该 id 的字段与最后一次 PATCH 响应完全一致",
+        "PATCH /api/tasks/__not_exist__ {status:'done'} 返回 404，且 GET /api/tasks 任务总数不变",
+        "对已存在任务 PATCH {status:'blocked'} 返回 400，随后 GET /api/tasks 中该任务 status 仍为原值",
+        "404 与 400 响应 content-type 含 application/json 且响应体可被 JSON.parse 成功解析"
+      ],
+      "contractPaths": [
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "Task",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-007",
+      "title": "DELETE /api/tasks/{id} 删除端点与 404 分支",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-015",
+        "R-016",
+        "R-022"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "创建任务后 DELETE /api/tasks/{id} 返回 200-299，随后 GET /api/tasks 返回数组中不存在该 id，且总数比删除前少 1",
+        "DELETE /api/tasks/__not_exist__ 返回 404，且 GET /api/tasks 任务总数不变",
+        "404 响应 content-type 含 application/json 且响应体可被 JSON.parse 成功解析"
+      ],
+      "contractPaths": [
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "Task",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-008",
+      "title": "GET /api/stats 汇总端点",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-017"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "空存储下 GET /api/stats 返回 200，body 深等于 {total:0,byStatus:{todo:0,doing:0,done:0}}",
+        "创建 2 个 todo、1 个 doing、1 个 done 后 GET /api/stats，body.total === 4 且 byStatus.todo === 2、byStatus.doing === 1、byStatus.done === 1",
+        "任意用例中断言 byStatus.todo + byStatus.doing + byStatus.done === body.total，且 body.total 等于同一时刻 GET /api/tasks 返回数组长度"
+      ],
+      "contractPaths": [
+        "/api/stats"
+      ],
+      "contractSchemas": [
+        "StatsResponse"
+      ]
+    },
+    {
+      "id": "T-009",
+      "title": "自动化测试套件：直接 import 被测模块，覆盖全部端点正常与异常分支",
+      "owner": "test",
+      "scope": "api",
+      "dependsOn": [
+        "T-004",
+        "T-005",
+        "T-006",
+        "T-007",
+        "T-008"
+      ],
+      "requirementIds": [
+        "R-002",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008",
+        "R-009",
+        "R-010",
+        "R-011",
+        "R-012",
+        "R-013",
+        "R-014",
+        "R-015",
+        "R-016",
+        "R-017",
+        "R-019"
+      ],
+      "deliverable": "TestSuite",
+      "acceptance": [
+        "执行 `npm run test` 退出码为 0，输出中至少包含对 GET /health、GET /api/tasks、POST /api/tasks、PATCH /api/tasks/{id}、DELETE /api/tasks/{id}、GET /api/stats 的断言用例",
+        "测试中包含 400 分支断言：title 缺失、title 为 null、title 为空串、title 为纯空白、非法 status、非法 priority；并包含 404 分支断言：PATCH 不存在 id、DELETE 不存在 id",
+        "测试代码中不存在对 child_process、spawn、exec 的引用，全部通过直接 import 被测模块并断言其返回的 HTTP 响应（状态码、content-type、JSON 响应体）",
+        "每个用例在独立内存状态下运行（用例结束后断言 GET /api/tasks 的长度与该用例创建数量一致），不依赖其他用例遗留数据",
+        "测试断言覆盖过滤组合（status+priority AND）、默认值（status=todo、priority=normal）、createdAt 合法性（new Date(createdAt).toISOString() === createdAt）"
+      ],
+      "contractPaths": [
+        "/health",
+        "/api/tasks",
+        "/api/tasks/{id}",
+        "/api/stats"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskList",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "StatsResponse",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-010",
+      "title": "验证报告：逐条记录需求覆盖与 typecheck/test 执行结果",
+      "owner": "test",
+      "scope": "api",
+      "dependsOn": [
+        "T-009"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-019",
+        "R-020",
+        "R-021"
+      ],
+      "deliverable": "TestReport",
+      "acceptance": [
+        "报告逐条列出 R-001 至 R-022 的通过/失败状态，并给出每条需求对应的测试用例名或检查方式",
+        "报告记录 `npm run test` 与 `npm run typecheck` 的实际退出码，二者均为 0",
+        "报告中不存在 must 级需求被标记为失败或未覆盖；若存在失败项，必须列出对应失败用例名与 HTTP 状态码/断言差异",
+        "报告记录 `npm start` 后对 http://127.0.0.1:8791/health 连续两次（间隔 ≥1s）GET 的实际状态码与响应体"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "StatsResponse",
+        "ErrorResponse"
+      ]
+    }
+  ]
+}

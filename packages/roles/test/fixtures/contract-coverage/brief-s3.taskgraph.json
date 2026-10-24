@@ -1,0 +1,219 @@
+{
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "产出前后端唯一事实来源的接口契约（端点 + 数据模型）",
+      "owner": "pm",
+      "scope": "shared",
+      "dependsOn": [],
+      "requirementIds": [
+        "R-002",
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008",
+        "R-009"
+      ],
+      "deliverable": "Contract",
+      "acceptance": [
+        "契约工件中存在且仅存在以下 6 个端点：GET /health、GET /、GET /api/tasks、POST /api/tasks、PATCH /api/tasks/{id}、DELETE /api/tasks/{id}",
+        "每个端点条目都显式声明 method、path、成功状态码与失败状态码（POST /api/tasks 声明 400；PATCH /api/tasks/{id} 与 DELETE /api/tasks/{id} 声明 404）",
+        "契约 schema 集合包含 HealthResponse、Task、TaskStatus、CreateTaskRequest、UpdateTaskRequest、ErrorResponse，且每个字段都带 type 声明",
+        "Task schema 的字段集合严格等于 {id, title, status, createdAt}，TaskStatus 的枚举值严格等于 ['todo','doing','done']（无多余值）",
+        "契约端点集合与所有 CodeModule 任务的 contractPaths 并集完全一致（无契约外端点、无未认领端点）"
+      ],
+      "contractPaths": [],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "HTTP 服务骨架、入口启动与 GET /health",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-001"
+      ],
+      "requirementIds": [
+        "R-001",
+        "R-002",
+        "R-012",
+        "R-013"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "执行 `npm start` 后 10 秒内对 http://127.0.0.1:8792/health 发起 GET 返回 2xx 状态码",
+        "首次 /health 请求成功后再发起一次 GET /health 仍返回 2xx，证明进程未在就绪前退出",
+        "GET /health 响应头 content-type 包含 'application/json'，且 JSON.parse(响应体).status === 'ok'",
+        "入口文件在模块顶层直接调用 listen（源码中存在顶层 listen 调用，进程不因只导出工厂函数而退出）",
+        "监听地址为 127.0.0.1，端口读取 PORT 环境变量且缺省为 8792",
+        "src 下所有相对导入说明符以 '.ts' 结尾，所有非相对导入说明符以 'node:' 开头",
+        "执行 `npm run typecheck` 退出码为 0"
+      ],
+      "contractPaths": [
+        "/health"
+      ],
+      "contractSchemas": [
+        "HealthResponse"
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "任务模型 + 内存仓库 + GET/POST /api/tasks（含 status 过滤与 400 校验）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-002"
+      ],
+      "requirementIds": [
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-010",
+        "R-012",
+        "R-013"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "POST /api/tasks 携带 {\"title\":\"a\"} 返回 201，响应体同时含 id、title、status、createdAt，status === 'todo'，Number.isFinite(Date.parse(createdAt)) 为 true",
+        "连续两次 POST /api/tasks 得到的 id 均为非空字符串且不相等",
+        "连续 POST 创建 3 个任务后 GET /api/tasks 返回 200 且响应体为长度 3 的数组，每个元素含 id、title、status、createdAt",
+        "创建 status 分别为 'todo' 与 'doing' 的任务后，GET /api/tasks?status=doing 返回长度 1 且该元素 status === 'doing'；GET /api/tasks?status=todo 结果所有元素 status === 'todo'；无 done 任务时 GET /api/tasks?status=done 返回 200 与 []",
+        "POST /api/tasks 携带 {} 与 {\"title\":\"\"} 均返回 400，且两次请求前后 GET /api/tasks 的数组长度一致",
+        "服务启动后首次 GET /api/tasks 返回 200 与空数组 []（内存存储，无预置数据）",
+        "src 中不出现 writeFile、appendFile、createWriteStream 字符串（无文件系统写操作）",
+        "src 中所有相对导入说明符以 '.ts' 结尾，所有非相对导入说明符以 'node:' 开头；`npm run typecheck` 退出码为 0"
+      ],
+      "contractPaths": [
+        "/api/tasks"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "PATCH/DELETE /api/tasks/{id}（含 404 分支）",
+      "owner": "backend",
+      "scope": "api",
+      "dependsOn": [
+        "T-003"
+      ],
+      "requirementIds": [
+        "R-007",
+        "R-008",
+        "R-012",
+        "R-013"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "POST 创建任务得到 id 后，PATCH /api/tasks/{id} 携带 {\"status\":\"done\"} 返回 2xx，响应体 status === 'done'",
+        "该 PATCH 之后 GET /api/tasks 中该 id 对应元素的 status === 'done'（变更写入内存存储）",
+        "PATCH /api/tasks/不存在的id 携带 {\"status\":\"done\"} 返回 404，且响应体可被 JSON.parse",
+        "POST 创建任务得到 id 后，DELETE /api/tasks/{id} 返回 2xx，随后 GET /api/tasks 返回的数组中不存在该 id",
+        "DELETE /api/tasks/不存在的id 返回 404，且响应体可被 JSON.parse",
+        "路由使用 URL 解析匹配路径，带查询串的请求不会误判到其它分支",
+        "src 中所有相对导入说明符以 '.ts' 结尾，所有非相对导入说明符以 'node:' 开头；`npm run typecheck` 退出码为 0"
+      ],
+      "contractPaths": [
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskStatus",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "GET / 返回零依赖单页 HTML 任务看板",
+      "owner": "frontend",
+      "scope": "web",
+      "dependsOn": [
+        "T-004"
+      ],
+      "requirementIds": [
+        "R-009",
+        "R-012",
+        "R-013"
+      ],
+      "deliverable": "CodeModule",
+      "acceptance": [
+        "GET http://127.0.0.1:8792/ 返回状态码 200，响应头 content-type 包含 'text/html'",
+        "响应体包含 '<!DOCTYPE html>'（不区分大小写）与 '<html'",
+        "响应体中同时出现 '/api/tasks'、'fetch'、'PATCH'、'DELETE' 四个字符串",
+        "响应体中出现 '<input' 与 '<button'，且存在触发 POST /api/tasks 的新建入口与列表项上的改状态/删除操作入口",
+        "响应体中不出现 '<script src=\"http' 与 'cdn'（无第三方前端依赖或外链）",
+        "页面在接口返回 400/404 时于页面内呈现可见错误提示，且单个请求失败不阻断其他操作",
+        "页面源码中所有相对导入说明符以 '.ts' 结尾，所有非相对导入说明符以 'node:' 开头；`npm run typecheck` 退出码为 0"
+      ],
+      "contractPaths": [
+        "/"
+      ],
+      "contractSchemas": [
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    },
+    {
+      "id": "T-006",
+      "title": "自动化测试套件（四接口正常/异常分支 + 过滤行为）",
+      "owner": "test",
+      "scope": "shared",
+      "dependsOn": [
+        "T-002",
+        "T-003",
+        "T-004",
+        "T-005"
+      ],
+      "requirementIds": [
+        "R-011",
+        "R-014",
+        "R-001",
+        "R-002",
+        "R-012",
+        "R-013"
+      ],
+      "deliverable": "TestSuite",
+      "acceptance": [
+        "执行 `npm run test` 退出码为 0，且输出汇总行中失败计数为 0",
+        "测试通过直接 import 应用工厂、在临时端口启动服务并用 fetch 断言响应，测试文件中不出现 'child_process' 与 'spawn(' 字符串",
+        "测试源码中存在对状态码 400 的断言（出现 '400'）与对状态码 404 的断言（出现 '404'）",
+        "测试源码中存在对 GET /api/tasks?status= 过滤行为的断言（出现 '?status='）",
+        "测试覆盖 GET /health 的 200 与 status === 'ok' 断言、GET /api/tasks 的数组断言、POST /api/tasks 的 201 断言",
+        "测试文件与源码中所有相对导入说明符以 '.ts' 结尾，所有非相对导入说明符以 'node:' 开头",
+        "执行 `npm run typecheck` 退出码为 0（测试源码包含在编译检查范围内）"
+      ],
+      "contractPaths": [
+        "/health",
+        "/",
+        "/api/tasks",
+        "/api/tasks/{id}"
+      ],
+      "contractSchemas": [
+        "HealthResponse",
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "UpdateTaskRequest",
+        "ErrorResponse"
+      ]
+    }
+  ]
+}

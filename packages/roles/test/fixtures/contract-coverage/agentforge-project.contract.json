@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "openapi": {
+    "openapi": "3.0.3",
+    "paths": {
+      "/health": {
+        "get": {
+          "operationId": "getHealth",
+          "summary": "健康检查",
+          "description": "服务存活探针。返回 2xx 且响应体为含 status 字段的 JSON 对象，status 恒为 'ok'。对应 R-005。",
+          "responses": {
+            "200": {
+              "description": "服务正常",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HealthStatus"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "Task": {
+          "type": "object",
+          "description": "任务对象。创建接口返回该对象，列表接口返回该对象的数组。对应 R-001 / R-002。",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "title",
+            "status",
+            "createdAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "任务唯一标识，非空字符串；同一进程内两次创建必不相同（R-001）"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "description": "任务标题，与创建请求中的 title 完全一致（R-001）"
+            },
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "description": "任务状态，本版仅约束为字符串，未定义取值枚举（R-001 只要求 string，不在契约中收紧）"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "minLength": 1,
+              "description": "创建时间，必须是可被 Date.parse 解析的时间字符串（R-001）"
+            }
+          }
+        },
+        "TaskCreateRequest": {
+          "type": "object",
+          "description": "创建任务的请求体。对应 R-001 / R-004。",
+          "additionalProperties": true,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "任务标题。缺省、非字符串、或全部为空白字符时服务端返回 400（R-004）；pattern \\S 表示至少包含一个非空白字符"
+            }
+          }
+        },
+        "TaskList": {
+          "type": "array",
+          "description": "全部任务的数组。无任务时为空数组而非 null / 404。对应 R-002。",
+          "items": {
+            "$ref": "#/components/schemas/Task"
+          }
+        },
+        "HealthStatus": {
+          "type": "object",
+          "description": "健康检查响应体。对应 R-005。",
+          "additionalProperties": true,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok"
+              ],
+              "description": "固定为 'ok'"
+            }
+          }
+        }
+      }
+    }
+  },
+  "jsonSchemas": {
+    "Task": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$id": "Task",
+      "title": "Task",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        }
+      }
+    },
+    "TaskCreateRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$id": "TaskCreateRequest",
+      "title": "TaskCreateRequest",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "TaskList": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$id": "TaskList",
+      "title": "TaskList",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Task"
+      },
+      "definitions": {
+        "Task": {
+          "$ref": "Task"
+        }
+      }
+    },
+    "HealthStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$id": "HealthStatus",
+      "title": "HealthStatus",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok"
+          ]
+        }
+      }
+    }
+  },
+  "generatedTypesPath": "src/shared/contract-types.ts",
+  "changeRequests": [
+    {
+      "id": "CR-001",
+      "reason": "TaskGraph-001 的 T-001 在 contractSchemas 中把创建请求体 schema 写作 'TaskCreateTask'，而同一任务的其他验收项与 T-003/T-004/T-007 均写作 'TaskCreateRequest'。契约必须一次冻结、hash 锁定，只能选一个规范名。本契约以 TaskCreateRequest 为唯一规范名（与 T-001 正文验收项「契约中 TaskCreateRequest schema 为 object 且 required 只含 title」一致），并请求把 TaskGraph 中的拼写统一。",
+      "evidence": [
+        {
+          "kind": "artifact",
+          "artifactId": "TaskGraph-001"
+        }
+      ],
+      "impact": [
+        "TaskGraph-001.T-001.contractSchemas（TaskCreateTask 拼写）",
+        "后续代码生成脚本按 schema 名产出类型时可能找不到 TaskCreateTask 而报错"
+      ],
+      "falsifier": {
+        "kind": "question",
+        "text": "TaskGraph-001 中 T-001 的 TaskCreateTask 是否只是 TaskCreateRequest 的笔误、契约以 TaskCreateRequest 为唯一规范名为准？若确认需要保留 TaskCreateTask 作为别名，请在新版本 TaskGraph 中显式声明，我再补一条向后兼容别名 schema。"
+      },
+      "status": "proposed"
+    }
+  ]
+}

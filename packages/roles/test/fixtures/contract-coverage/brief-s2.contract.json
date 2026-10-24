@@ -1,0 +1,779 @@
+{
+  "version": 1,
+  "openapi": {
+    "openapi": "3.1.0",
+    "paths": {
+      "/health": {
+        "get": {
+          "operationId": "getHealth",
+          "summary": "健康检查",
+          "description": "返回服务健康状态。正常时响应体 status 恒为字符串 \"ok\"，响应不依赖任何请求参数或请求体。",
+          "responses": {
+            "200": {
+              "description": "服务健康",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HealthResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "本端点正常路径不返回该状态码；此处保留为全端点统一的 ErrorResponse 错误契约结构",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "本端点正常路径不返回该状态码；此处保留为全端点统一的 ErrorResponse 错误契约结构（未知路由的兜底响应见变更请求 CR-001）",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/tasks": {
+        "get": {
+          "operationId": "listTasks",
+          "summary": "列出任务，支持 status / priority 过滤",
+          "description": "返回当前内存存储中的全部任务数组；无任务时返回空数组。status 与 priority 两个查询参数可单独使用，也可同时使用，同时使用时语义为逻辑与（AND，精确匹配）。需求未定义过滤参数取非法枚举值时的行为，契约不约束该分支（见变更请求 CR-002）。",
+          "parameters": [
+            {
+              "name": "status",
+              "in": "query",
+              "required": false,
+              "description": "按 status 精确过滤；缺省表示不按 status 过滤",
+              "schema": {
+                "$ref": "#/components/schemas/TaskStatus"
+              }
+            },
+            {
+              "name": "priority",
+              "in": "query",
+              "required": false,
+              "description": "按 priority 精确过滤；缺省表示不按 priority 过滤",
+              "schema": {
+                "$ref": "#/components/schemas/TaskPriority"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "任务对象数组，元素字段严格为 id/title/status/priority/createdAt；无匹配时为空数组",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/TaskList"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "统一错误响应（ErrorResponse 结构）；本端点正常路径不返回该状态码",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "统一错误响应（ErrorResponse 结构）；本端点正常路径不返回该状态码",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "operationId": "createTask",
+          "summary": "创建任务",
+          "description": "创建成功后返回服务端生成的 id 与 createdAt，以及生效后的 status/priority（未提供时取默认值 todo / normal）。校验失败时不创建任务，存储状态不改变。",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateTaskRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "创建成功，响应体为创建后的完整任务对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "请求体校验失败：title 缺失 / 为 null / 为空串 / 仅含空白字符，或 status / priority 不在枚举范围内。任务未被创建，响应体为 ErrorResponse",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "统一错误响应（ErrorResponse 结构）；本端点正常路径不返回该状态码",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/tasks/{id}": {
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "patch": {
+          "operationId": "updateTask",
+          "summary": "局部更新任务",
+          "description": "可修改 title、status、priority 中任意一个或多个字段；未出现在请求体中的字段保持不变，id 与 createdAt 永不改变。成功时返回更新后的完整任务对象。校验失败时不修改任务。",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateTaskRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "更新成功，响应体为更新后的完整任务对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "请求体校验失败：title 为空 / 仅含空白字符，或 status / priority 不在枚举范围内。任务未被修改，响应体为 ErrorResponse",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "目标 id 不存在。存储状态不变，响应体为 ErrorResponse",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "operationId": "deleteTask",
+          "summary": "删除任务",
+          "description": "删除成功后该 id 不再出现在 GET /api/tasks 结果中，且任务总数减一。响应体为被删除的任务对象。",
+          "responses": {
+            "200": {
+              "description": "删除成功，响应体为被删除的完整任务对象",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "本端点无请求体，正常路径不返回该状态码；此处保留为全端点统一的 ErrorResponse 错误契约结构",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "目标 id 不存在。存储状态不变，响应体为 ErrorResponse",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/stats": {
+        "get": {
+          "operationId": "getStats",
+          "summary": "任务汇总统计",
+          "description": "返回当前任务总数与按 status 的分组计数。约束：byStatus.todo + byStatus.doing + byStatus.done === total，且 total 等于同一时刻 GET /api/tasks 返回数组的长度。",
+          "responses": {
+            "200": {
+              "description": "统计数据；空存储时为 {total:0,byStatus:{todo:0,doing:0,done:0}}",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/StatsResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "本端点无请求参数，正常路径不返回该状态码；此处保留为全端点统一的 ErrorResponse 错误契约结构",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "本端点正常路径不返回该状态码；此处保留为全端点统一的 ErrorResponse 错误契约结构",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "HealthResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "ok",
+              "type": "string",
+              "description": "固定为 \"ok\""
+            }
+          }
+        },
+        "TaskStatus": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "done"
+          ],
+          "description": "任务状态枚举"
+        },
+        "TaskPriority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ],
+          "description": "任务优先级枚举"
+        },
+        "Task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "title",
+            "status",
+            "priority",
+            "createdAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "服务端生成的任务 id"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "description": "任务标题；不允许为空串或仅含空白字符"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus"
+            },
+            "priority": {
+              "$ref": "#/components/schemas/TaskPriority"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "description": "ISO 8601 字符串，满足 new Date(createdAt).toISOString() === createdAt"
+            }
+          }
+        },
+        "TaskList": {
+          "type": "array",
+          "description": "任务数组，顺序未在需求中约定",
+          "items": {
+            "$ref": "#/components/schemas/Task"
+          }
+        },
+        "CreateTaskRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "必填；缺失、null、空串或仅含空白字符均返回 400"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus",
+              "description": "可选，缺省为 'todo'；不在枚举内返回 400"
+            },
+            "priority": {
+              "$ref": "#/components/schemas/TaskPriority",
+              "description": "可选，缺省为 'normal'；不在枚举内返回 400"
+            }
+          }
+        },
+        "UpdateTaskRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "至少包含一个可更新字段；未出现的字段保持不变",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "可选；若提供则为非空白字符串，否则返回 400"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TaskStatus",
+              "description": "可选；不在枚举内返回 400"
+            },
+            "priority": {
+              "$ref": "#/components/schemas/TaskPriority",
+              "description": "可选；不在枚举内返回 400"
+            }
+          }
+        },
+        "StatsResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total",
+            "byStatus"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "当前任务总数"
+            },
+            "byStatus": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "todo",
+                "doing",
+                "done"
+              ],
+              "properties": {
+                "todo": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "doing": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "done": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "description": "按 status 分组计数；三项之和等于 total"
+            }
+          }
+        },
+        "ErrorResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error",
+            "message"
+          ],
+          "properties": {
+            "error": {
+              "type": "string",
+              "minLength": 1,
+              "description": "机器可读错误码，建议取值 VALIDATION_ERROR（400）、NOT_FOUND（404）"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "description": "人类可读错误说明"
+            }
+          },
+          "description": "所有 400 / 404 / 未知路由响应的统一 JSON 结构"
+        }
+      }
+    }
+  },
+  "jsonSchemas": {
+    "HealthResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "HealthResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "ok"
+        }
+      }
+    },
+    "TaskStatus": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskStatus",
+      "type": "string",
+      "enum": [
+        "todo",
+        "doing",
+        "done"
+      ]
+    },
+    "TaskPriority": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskPriority",
+      "type": "string",
+      "enum": [
+        "low",
+        "normal",
+        "high"
+      ]
+    },
+    "Task": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Task",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "status",
+        "priority",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "done"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "TaskList": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskList",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Task"
+      },
+      "$defs": {
+        "Task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "title",
+            "status",
+            "priority",
+            "createdAt"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "todo",
+                "doing",
+                "done"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "normal",
+                "high"
+              ]
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+            }
+          }
+        }
+      }
+    },
+    "CreateTaskRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "CreateTaskRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "done"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ]
+        }
+      }
+    },
+    "UpdateTaskRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "UpdateTaskRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "done"
+          ]
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ]
+        }
+      }
+    },
+    "StatsResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "StatsResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "byStatus"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byStatus": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "todo",
+            "doing",
+            "done"
+          ],
+          "properties": {
+            "todo": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "doing": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "done": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "ErrorResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ErrorResponse",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error",
+        "message"
+      ],
+      "properties": {
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "generatedTypesPath": "src/shared/contract-types.ts",
+  "changeRequests": [
+    {
+      "id": "CR-001",
+      "reason": "R-022 要求所有响应（含不存在路由的错误响应）均为 JSON，但 OpenAPI 的 paths 只能声明已知路径，无法表达「任意未声明路径」的兜底行为。为避免契约路径集合膨胀并被误认作新增端点，契约不新增任何路径，兜底响应需由实现层的 catch-all 承担。",
+      "evidence": [
+        {
+          "kind": "artifact",
+          "artifactId": "Requirement-001"
+        },
+        {
+          "kind": "artifact",
+          "artifactId": "PRD-001"
+        }
+      ],
+      "impact": [
+        "契约 paths 集合保持为 {/health, /api/tasks, /api/tasks/{id}, /api/stats}，不新增路径",
+        "后端需在路由分发末尾实现 catch-all：任何未匹配请求返回 404 + ErrorResponse，content-type 含 application/json",
+        "测试需断言未知路径响应可被 JSON.parse 且 content-type 含 application/json",
+        "不接受对该兜底行为做 200 或 HTML 文本响应"
+      ],
+      "falsifier": {
+        "kind": "question",
+        "text": "后端是否在所有已声明的 4 条路径之外，对一切未匹配请求统一返回 404 + ErrorResponse（content-type: application/json），而契约 paths 仍保持 4 条不变？"
+      },
+      "status": "proposed"
+    },
+    {
+      "id": "CR-002",
+      "reason": "需求未定义 GET /api/tasks 的 status / priority 查询参数取非法枚举值（如 ?status=blocked）时的行为：返回 400 还是忽略该过滤条件。契约把两个参数声明为枚举，但未约束该分支，若不澄清，测试对任一行为的断言都会与实现产生歧义。",
+      "evidence": [
+        {
+          "kind": "artifact",
+          "artifactId": "Requirement-001"
+        },
+        {
+          "kind": "artifact",
+          "artifactId": "TaskGraph-001"
+        }
+      ],
+      "impact": [
+        "测试不得对 ?status=<非法值> / ?priority=<非法值> 断言具体状态码或具体结果集",
+        "后端可自行选择「忽略非法过滤值」或「按不匹配返回空数组」，契约不把它列为验收点",
+        "契约中的 400 响应用于请求体校验失败（POST/PATCH），不用于过滤参数校验"
+      ],
+      "falsifier": {
+        "kind": "question",
+        "text": "当收到 ?status=blocked（枚举外的过滤值）时，期望 200 空数组还是 400？若两者皆可，是否确认该分支不进入任何验收点？"
+      },
+      "status": "proposed"
+    }
+  ]
+}
