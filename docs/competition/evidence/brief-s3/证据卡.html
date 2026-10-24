@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>AgentForge 交付证据卡 · run-2026-10-24T04-36-54-042Z</title>
+<style>
+  :root { --bg:#0f1419; --panel:#181f27; --line:#2b3642; --fg:#eaf0f6; --muted:#9aa7b4; --ok:#35c48f; --bad:#e86a5c; --warn:#f2b544; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px; background:var(--bg); color:var(--fg);
+         font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  h1 { font-size:26px; margin:0 0 6px; } h2 { font-size:18px; margin:34px 0 12px; color:var(--ok); }
+  .sub { color:var(--muted); margin-bottom:22px; }
+  .hero { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--ok);
+          border-radius:10px; padding:18px 20px; margin:18px 0; }
+  .hero b { color:var(--ok); font-size:19px; }
+  .kpis { display:flex; gap:14px; flex-wrap:wrap; margin:16px 0 0; }
+  .kpi { background:#121922; border:1px solid var(--line); border-radius:8px; padding:10px 16px; min-width:170px; }
+  .kpi span { display:block; color:var(--muted); font-size:12px; }
+  .kpi b { font-size:20px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border-radius:8px; overflow:hidden; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:13px; background:#141b23; }
+  td { font-size:14px; }
+  code,pre { font-family:"Cascadia Mono",Consolas,monospace; }
+  pre { background:#0b1016; border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+        margin:6px 0 0; overflow-x:auto; font-size:12.5px; color:#cfe3d9; }
+  code.q { color:var(--warn); }
+  .chip { display:inline-block; padding:1px 7px; border-radius:5px; font-size:12px; margin:1px 2px; }
+  .chip.ok { background:#14352a; color:var(--ok); } .chip.bad { background:#3a1f1c; color:var(--bad); }
+  .chip.warn { background:#3a2f16; color:var(--warn); }
+  .ok-t { color:var(--ok); font-weight:600; } .bad-t { color:var(--bad); font-weight:600; } .warn-t { color:var(--warn); font-weight:600; }
+  .ev { border-left:2px solid var(--line); padding:2px 0 2px 10px; margin:6px 0; font-size:12.5px; color:#c9d6e2; }
+  .ev-cell { max-width:640px; }
+  .note { color:var(--muted); font-size:13px; }
+  table.gates th:nth-child(1), table.gates td:nth-child(1) { width:150px; }
+  table.gates th:nth-child(2), table.gates td:nth-child(2) { width:80px; }
+  table.gates th:nth-child(4), table.gates td:nth-child(4) { width:150px; }
+  table.reqs th:nth-child(1), table.reqs td:nth-child(1) { width:84px; }
+  table.reqs th:nth-child(3), table.reqs td:nth-child(3) { width:72px; }
+  table.reqs th:nth-child(4), table.reqs td:nth-child(4) { width:70px; }
+  table.reqs td:nth-child(2) { max-width:300px; }
+  ul { margin:6px 0 0 18px; padding:0; } li { margin:3px 0; }
+</style></head><body>
+
+<h1>AgentForge 交付证据卡</h1>
+<div class="sub">run <code>run-2026-10-24T04-36-54-042Z</code> · 全部数据来自这次运行的原始记录，页面上每个结论都标了出处文件</div>
+
+<div class="hero">
+  <b>真·完整交付　14/14 条需求确认达成</b>
+  <div class="note">判定来源：<code>verdict.txt</code>（服务端 <code>deriveVerdict()</code> 的输出，非人工撰写）</div>
+  <div class="kpis">
+    <div class="kpi"><span>机械轴 delivery</span><b>complete</b></div>
+    <div class="kpi"><span>门禁轮数</span><b>7</b></div>
+    <div class="kpi"><span>需求达成</span><b>14/14</b></div>
+    <div class="kpi"><span>逐条核验的证据</span><b>55</b></div>
+    <div class="kpi"><span>技术债</span><b>0</b></div>
+  </div>
+</div>
+
+<h2>原始诉求（一个字没改）</h2>
+<pre>做一个单页任务看板（后端 + 一个网页界面）。
+
+要求：
+1. `npm start` 启动并监听 127.0.0.1:&lt;port&gt;；GET /health 返回 {status:ok}。
+2. 任务字段：id、title（必填）、status（'todo' | 'doing' | 'done'，默认 'todo'）、createdAt。
+3. 接口：GET /api/tasks（支持 ?status= 过滤）、POST /api/tasks（title 缺失 → 400）、PATCH /api/tasks/{id}（不存在 → 404）、DELETE /api/tasks/{id}（不存在 → 404）。
+4. GET / 返回一个可直接用的 HTML 页面：能列出任务、能新建任务、能改状态、能删除；页面里的请求要打到上面这些接口。
+5. 内存存储即可。必须写测试，覆盖接口的正常与异常分支。
+6. 相对导入必须带 .ts 扩展名；只用 Node 内置模块，不引入任何第三方库。</pre>
+
+<h2>三次真检查（不是看字符串，是真跑命令）</h2>
+<table>
+  <tr><th>锚点</th><th>判什么</th><th>实测</th><th>出处</th></tr>
+  <tr><td>A4</td><td>类型检查</td><td class="ok-t">exitCode 0</td><td class="note">anchors/（tsc --noEmit 真跑）</td></tr>
+  <tr><td>A5</td><td>测试执行</td><td class="ok-t">passed 30 / failed 0</td><td class="note">anchors/（真跑测试套件并解析计数）</td></tr>
+  <tr><td>A6</td><td>运行时探针</td><td class="ok-t">HTTP 200 · readyMs 632</td><td class="note">anchors/（真启动服务后探活）</td></tr>
+  <tr><td>A7</td><td>契约一致性</td><td class="ok-t">PASS</td><td class="note">anchors/</td></tr>
+</table>
+
+<h2>七次门禁：两次被打回，两次都被修好</h2>
+<div class="note">这是这次交付最值得看的地方 —— 不是一次就过，而是<b>能收敛</b>。每次判定的锚点集合与下一步动作都在 <code>gates.txt</code> 与 <code>decisions.jsonl</code> 里。</div>
+<table class="gates" style="margin-top:10px">
+  <tr><th>阶段</th><th>轮次</th><th>锚点判定</th><th>下一步</th></tr>
+  <tr><td>INTAKE</td><td>seq1</td><td></td><td class="ok-t">ADVANCE</td></tr><tr><td>PLANNING</td><td>seq1</td><td><span class="chip warn">B2 WARN</span></td><td class="ok-t">ADVANCE</td></tr><tr><td>CONTRACTING</td><td>seq1</td><td><span class="chip warn">A7 WARN</span> <span class="chip warn">B2 WARN</span></td><td class="ok-t">ADVANCE</td></tr><tr><td>BUILDING</td><td>seq1</td><td><span class="chip warn">A1 WARN</span> <span class="chip ok">A2 PASS</span> <span class="chip ok">A3 PASS</span> <span class="chip bad">A4 FAIL</span> <span class="chip ok">A5 PASS</span> <span class="chip bad">A7 FAIL</span> <span class="chip ok">A8 PASS</span> <span class="chip ok">B2 PASS</span></td><td class="bad-t">RETRY_ROLE</td></tr><tr><td>BUILDING</td><td>seq2</td><td><span class="chip warn">A1 WARN</span> <span class="chip ok">A2 PASS</span> <span class="chip ok">A3 PASS</span> <span class="chip ok">A4 PASS</span> <span class="chip ok">A5 PASS</span> <span class="chip ok">A7 PASS</span> <span class="chip ok">A8 PASS</span> <span class="chip ok">B2 PASS</span></td><td class="ok-t">ADVANCE</td></tr><tr><td>REVIEW</td><td>seq1</td><td><span class="chip warn">A1 WARN</span> <span class="chip ok">A2 PASS</span> <span class="chip ok">A3 PASS</span> <span class="chip ok">A4 PASS</span> <span class="chip ok">A5 PASS</span> <span class="chip bad">A6 FAIL</span> <span class="chip ok">A7 PASS</span> <span class="chip ok">A8 PASS</span> <span class="chip warn">B1 SKIPPED</span> <span class="chip ok">B2 PASS</span> <span class="chip warn">B3 SKIPPED</span></td><td class="bad-t">RETRY_ROLE</td></tr><tr><td>REVIEW</td><td>seq2</td><td><span class="chip warn">A1 WARN</span> <span class="chip ok">A2 PASS</span> <span class="chip ok">A3 PASS</span> <span class="chip ok">A4 PASS</span> <span class="chip ok">A5 PASS</span> <span class="chip ok">A6 PASS</span> <span class="chip ok">A7 PASS</span> <span class="chip ok">A8 PASS</span> <span class="chip ok">B1 PASS</span> <span class="chip ok">B2 PASS</span> <span class="chip ok">B3 PASS</span></td><td class="ok-t">ADVANCE</td></tr>
+</table>
+
+<h2>14 条需求 × 55 条证据（每条都带文件与行号，逐字核对）</h2>
+<div class="note">语义验证器（B1）对每条需求给出判定，并必须引用<b>真实文件 + 真实行号 + 一段逐字原文</b>；
+系统会逐条核验：文件不存在、行号越界、区间里找不到那段原文 —— 任何一条不成立，整条判定作废。
+这次 <code>evidenceChecked = 55</code>、<code>invalidEvidence = false</code>。</div>
+<table class="reqs" style="margin-top:10px">
+  <tr><th>需求</th><th>要求</th><th>判定</th><th>证据</th><th>证据（文件:行 + 逐字原文 + 对应代码）</th></tr>
+  <tr>
+      <td><b>R-001</b></td>
+      <td>`npm start` 必须在前台持续启动 HTTP 服务，并监听 127.0.0.1 上的端口（默认 8792，若提供 PORT 环境变量则使用该值），监听地址必须是 127.0</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/server.ts:1-16</code>
+          要求逐字包含 <code class="q">server.listen(port, host, () =&gt; {</code>
+          <pre>14| server.listen(port, host, () =&gt; {</pre>
+        </div><div class="ev">
+          <code>src/api/server.ts:13-29</code>
+          要求逐字包含 <code class="q">server.listen(port, host, () =&gt; {</code>
+          <pre>27| server.listen(port, host, () =&gt; {</pre>
+        </div><div class="ev">
+          <code>src/app.ts:11-15</code>
+          要求逐字包含 <code class="q">export const DEFAULT_PORT = 8792;</code>
+          <pre>12| export const DEFAULT_PORT = 8792;</pre>
+        </div><div class="ev">
+          <code>test/health.test.ts:24-42</code>
+          要求逐字包含 <code class="q">assert.equal(DEFAULT_HOST, '127.0.0.1');</code>
+          <pre>36| assert.equal(DEFAULT_HOST, '127.0.0.1');</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-002</b></td>
+      <td>GET /health 返回 JSON 响应体 {&quot;status&quot;:&quot;ok&quot;}，Content-Type 为 application/jso</td>
+      <td class="ok-t">met</td>
+      <td>3</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/http.ts:9-15</code>
+          要求逐字包含 <code class="q">res.setHeader('Content-Type', 'application/json; charset=utf-8');</code>
+          <pre>12| res.setHeader('Content-Type', 'application/json; charset=utf-8');</pre>
+        </div><div class="ev">
+          <code>test/health.test.ts:17-22</code>
+          要求逐字包含 <code class="q">assert.deepEqual(asRecord(res.body), { status: 'ok' });</code>
+          <pre>21| assert.deepEqual(asRecord(res.body), { status: 'ok' });</pre>
+        </div><div class="ev">工件证据：TestReport-001</div></td>
+    </tr><tr>
+      <td><b>R-003</b></td>
+      <td>任务对象包含字段：id（字符串，服务内唯一）、title（字符串，必填，非空）、status（取值只允许 'todo' | 'doing' | 'done'，创建时未提供则默认 '</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/store.ts:34-43</code>
+          要求逐字包含 <code class="q">status: input.status ?? 'todo',</code>
+          <pre>38| status: input.status ?? 'todo',</pre>
+        </div><div class="ev">
+          <code>src/tasks/store.ts:4-5</code>
+          要求逐字包含 <code class="q">export const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'done'];</code>
+          <pre>5| export const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'done'];</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:28-42</code>
+          要求逐字包含 <code class="q">assert.deepEqual(Object.keys(task).sort(), ['createdAt', 'id', 'status', 'title']);</code>
+          <pre>41| assert.deepEqual(Object.keys(task).sort(), ['createdAt', 'id', 'status', 'title']);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:44-52</code>
+          要求逐字包含 <code class="q">assert.notEqual(first['id'], second['id']);</code>
+          <pre>49| assert.notEqual(first['id'], second['id']);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-004</b></td>
+      <td>GET /api/tasks 返回当前全部任务组成的 JSON 数组；不带查询参数时返回所有状态的任务。</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/routes.ts:22-27</code>
+          要求逐字包含 <code class="q">sendJson(res, 200, result);</code>
+          <pre>26| sendJson(res, 200, result);</pre>
+        </div><div class="ev">
+          <code>src/tasks/store.ts:25-31</code>
+          要求逐字包含 <code class="q">return all;</code>
+          <pre>28| return all;</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:21-26</code>
+          要求逐字包含 <code class="q">assert.deepEqual(asArray(res.body), []);</code>
+          <pre>25| assert.deepEqual(asArray(res.body), []);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:54-69</code>
+          要求逐字包含 <code class="q">assert.equal(tasks.length, 3);</code>
+          <pre>62| assert.equal(tasks.length, 3);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-005</b></td>
+      <td>GET /api/tasks?status=&lt;value&gt; 按 status 过滤，只返回 status 与查询值相等的任务。</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/store.ts:25-31</code>
+          要求逐字包含 <code class="q">return all.filter((task) =&gt; task.status === status);</code>
+          <pre>30| return all.filter((task) =&gt; task.status === status);</pre>
+        </div><div class="ev">
+          <code>src/tasks/routes.ts:23-26</code>
+          要求逐字包含 <code class="q">const status = url.searchParams.get('status');</code>
+          <pre>24| const status = url.searchParams.get('status');</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:71-82</code>
+          要求逐字包含 <code class="q">assert.equal(tasks.length, 1);</code>
+          <pre>78| assert.equal(tasks.length, 1);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:98-103</code>
+          要求逐字包含 <code class="q">assert.deepEqual(asArray(res.body), []);</code>
+          <pre>102| assert.deepEqual(asArray(res.body), []);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-006</b></td>
+      <td>POST /api/tasks 创建任务：合法请求返回 201 与新建的任务对象；title 缺失或为空字符串时返回 400，且不产生新任务。</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/routes.ts:41-45</code>
+          要求逐字包含 <code class="q">sendError(res, 400, 'title 必填且不能为空字符串');</code>
+          <pre>43| sendError(res, 400, 'title 必填且不能为空字符串');</pre>
+        </div><div class="ev">
+          <code>src/tasks/routes.ts:59-60</code>
+          要求逐字包含 <code class="q">sendJson(res, 201, created);</code>
+          <pre>60| sendJson(res, 201, created);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:105-121</code>
+          要求逐字包含 <code class="q">assert.equal(missing.status, 400);</code>
+          <pre>110| assert.equal(missing.status, 400);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:28-32</code>
+          要求逐字包含 <code class="q">assert.equal(res.status, 201);</code>
+          <pre>30| assert.equal(res.status, 201);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-007</b></td>
+      <td>PATCH /api/tasks/{id} 更新指定任务（至少支持更新 status，支持把 status 改为 'doing'/'done'），成功返回 2xx 与更新后的任务对</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/item-routes.ts:53-65</code>
+          要求逐字包含 <code class="q">sendJson(res, 200, updated);</code>
+          <pre>64| sendJson(res, 200, updated);</pre>
+        </div><div class="ev">
+          <code>src/tasks/item-routes.ts:59-63</code>
+          要求逐字包含 <code class="q">sendError(res, 404, `任务不存在：${id}`);</code>
+          <pre>61| sendError(res, 404, `任务不存在：${id}`);</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:30-43</code>
+          要求逐字包含 <code class="q">assert.equal(found['status'], 'done');</code>
+          <pre>42| assert.equal(found['status'], 'done');</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:57-61</code>
+          要求逐字包含 <code class="q">assert.equal(res.status, 404);</code>
+          <pre>59| assert.equal(res.status, 404);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-008</b></td>
+      <td>DELETE /api/tasks/{id} 删除指定任务，成功返回 2xx；id 不存在时返回 404。</td>
+      <td class="ok-t">met</td>
+      <td>3</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/item-routes.ts:31-39</code>
+          要求逐字包含 <code class="q">sendJson(res, 200, removed);</code>
+          <pre>38| sendJson(res, 200, removed);</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:77-91</code>
+          要求逐字包含 <code class="q">assert.ok(res.status &gt;= 200 &amp;&amp; res.status &lt; 300</code>
+          <pre>82| assert.ok(res.status &gt;= 200 &amp;&amp; res.status &lt; 300, `期望 2xx，实际 ${res.status}`);</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:93-102</code>
+          要求逐字包含 <code class="q">assert.equal(missing.status, 404);</code>
+          <pre>95| assert.equal(missing.status, 404);</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-009</b></td>
+      <td>GET / 返回一个可直接使用的 HTML 页面（Content-Type 含 text/html），页面内通过请求 /api/tasks 系列接口实现：列出任务、新建任务、修改任</td>
+      <td class="ok-t">met</td>
+      <td>7</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/web/page.ts:238-242</code>
+          要求逐字包含 <code class="q">res.setHeader('Content-Type', 'text/html; charset=utf-8');</code>
+          <pre>240| res.setHeader('Content-Type', 'text/html; charset=utf-8');</pre>
+        </div><div class="ev">
+          <code>src/web/page.ts:9-10</code>
+          要求逐字包含 <code class="q">&lt;!DOCTYPE html&gt;</code>
+          <pre>9| export const INDEX_HTML = `&lt;!DOCTYPE html&gt;</pre>
+        </div><div class="ev">
+          <code>src/web/page.ts:67-94</code>
+          要求逐字包含 <code class="q">var API = '/api/tasks';</code>
+          <pre>71| var API = '/api/tasks';</pre>
+        </div><div class="ev">
+          <code>src/web/page.ts:48-56</code>
+          要求逐字包含 <code class="q">&lt;input id=&quot;title-input&quot; type=&quot;text&quot;</code>
+          <pre>49| &lt;input id=&quot;title-input&quot; type=&quot;text&quot; placeholder=&quot;输入任务标题&quot; autocomplete=&quot;off&quot; required&gt;</pre>
+        </div><div class="ev">
+          <code>src/web/page.ts:177-182</code>
+          要求逐字包含 <code class="q">method: 'PATCH',</code>
+          <pre>179| method: 'PATCH',</pre>
+        </div><div class="ev">
+          <code>src/web/page.ts:191-193</code>
+          要求逐字包含 <code class="q">method: 'DELETE'</code>
+          <pre>192| request(API + '/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () {</pre>
+        </div><div class="ev">
+          <code>test/web-page.test.ts:29-51</code>
+          要求逐字包含 <code class="q">assert.ok(!html.toLowerCase().includes('cdn'), '页面不应引用 CDN 资源');</code>
+          <pre>49| assert.ok(!html.toLowerCase().includes('cdn'), '页面不应引用 CDN 资源');</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-010</b></td>
+      <td>任务数据仅保存在进程内存中，不写入任何持久化文件；服务进程重启后任务列表为空。</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>src/tasks/store.ts:7-8</code>
+          要求逐字包含 <code class="q">const tasks = new Map&lt;string, Task&gt;();</code>
+          <pre>8| const tasks = new Map&lt;string, Task&gt;();</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:21-26</code>
+          要求逐字包含 <code class="q">assert.deepEqual(asArray(res.body), []);</code>
+          <pre>25| assert.deepEqual(asArray(res.body), []);</pre>
+        </div><div class="ev">
+          <code>test/static-checks.test.ts:90-102</code>
+          要求逐字包含 <code class="q">for (const token of FS_WRITE_TOKENS) {</code>
+          <pre>95| for (const token of FS_WRITE_TOKENS) {</pre>
+        </div><div class="ev">工件证据：TestReport-001</div></td>
+    </tr><tr>
+      <td><b>R-011</b></td>
+      <td>必须提供自动化测试，覆盖 4 个接口的正常分支与异常分支（POST 缺 title 的 400、PATCH 不存在的 404、DELETE 不存在的 404），并且 `npm ru</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">工件证据：TestReport-001</div><div class="ev">
+          <code>test/tasks-collection.test.ts:105-121</code>
+          要求逐字包含 <code class="q">assert.equal(blank.status, 400);</code>
+          <pre>117| assert.equal(blank.status, 400);</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:57-61</code>
+          要求逐字包含 <code class="q">assert.equal(res.status, 404);</code>
+          <pre>59| assert.equal(res.status, 404);</pre>
+        </div><div class="ev">
+          <code>test/tasks-collection.test.ts:71-78</code>
+          要求逐字包含 <code class="q">/api/tasks?status=doing</code>
+          <pre>71| test('R-005：GET /api/tasks?status=doing 只返回 doing 任务', async () =&gt; {</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-012</b></td>
+      <td>所有相对导入必须带显式 .ts 扩展名（例如 './app.ts'），源码与测试通过 `npm run typecheck` 编译检查。</td>
+      <td class="ok-t">met</td>
+      <td>3</td>
+      <td class="ev-cell"><div class="ev">
+          <code>test/static-checks.test.ts:70-88</code>
+          要求逐字包含 <code class="q">assert.deepEqual(relativeViolations, [], '相对导入必须带显式 .ts 扩展名');</code>
+          <pre>86| assert.deepEqual(relativeViolations, [], '相对导入必须带显式 .ts 扩展名');</pre>
+        </div><div class="ev">
+          <code>test/helpers.ts:1-4</code>
+          要求逐字包含 <code class="q">from '../src/app.ts';</code>
+          <pre>3| import { createServer } from '../src/app.ts';</pre>
+        </div><div class="ev">工件证据：TestReport-001</div></td>
+    </tr><tr>
+      <td><b>R-013</b></td>
+      <td>只使用 Node 内置模块，不引入任何第三方依赖；应用代码与测试代码都禁止 spawn 子进程（child_process）。</td>
+      <td class="ok-t">met</td>
+      <td>3</td>
+      <td class="ev-cell"><div class="ev">
+          <code>test/static-checks.test.ts:61-62</code>
+          要求逐字包含 <code class="q">const FORBIDDEN_PROCESS_TOKENS = ['child' + '_process', 'spawn' + '('];</code>
+          <pre>62| const FORBIDDEN_PROCESS_TOKENS = ['child' + '_process', 'spawn' + '('];</pre>
+        </div><div class="ev">
+          <code>test/static-checks.test.ts:104-115</code>
+          要求逐字包含 <code class="q">for (const token of FORBIDDEN_PROCESS_TOKENS) {</code>
+          <pre>108| for (const token of FORBIDDEN_PROCESS_TOKENS) {</pre>
+        </div><div class="ev">
+          <code>test/static-checks.test.ts:76-84</code>
+          要求逐字包含 <code class="q">} else if (!specifier.startsWith('node:')) {</code>
+          <pre>81| } else if (!specifier.startsWith('node:')) {</pre>
+        </div></td>
+    </tr><tr>
+      <td><b>R-014</b></td>
+      <td>测试必须直接 import 被测模块并对返回值/HTTP 响应做断言，不通过命令行间接验证（不 spawn npm/node）。</td>
+      <td class="ok-t">met</td>
+      <td>4</td>
+      <td class="ev-cell"><div class="ev">
+          <code>test/helpers.ts:31-51</code>
+          要求逐字包含 <code class="q">const server: Server = createServer();</code>
+          <pre>33| const server: Server = createServer();</pre>
+        </div><div class="ev">
+          <code>test/tasks-item.test.ts:1-14</code>
+          要求逐字包含 <code class="q">} from './helpers.ts';</code>
+          <pre>13| } from './helpers.ts';</pre>
+        </div><div class="ev">
+          <code>test/static-checks.test.ts:104-115</code>
+          要求逐字包含 <code class="q">if (text.includes(token)) {</code>
+          <pre>109| if (text.includes(token)) {</pre>
+        </div><div class="ev">工件证据：TestReport-001</div></td>
+    </tr>
+</table>
+
+<h2>交付物（可运行，含它自己的 30 条测试）</h2>
+<pre>package.json
+run-tests.mjs
+src/api/server.ts
+src/app.ts
+src/http.ts
+src/index.ts
+src/main.ts
+src/server.ts
+src/shared/contract-types.ts
+src/tasks/item-routes.ts
+src/tasks/routes.ts
+src/tasks/store.ts
+src/web/page.ts
+test/health.test.ts
+test/helpers.ts
+test/static-checks.test.ts
+test/tasks-collection.test.ts
+test/tasks-item.test.ts
+test/web-page.test.ts
+tsconfig.json</pre>
+<div class="note">运行：<code>cd deliverable &amp;&amp; node src/api/server.ts</code> → 浏览器打开 <code>http://127.0.0.1:8792/</code>；
+测试：<code>node run-tests.mjs</code> → 30 passed / 0 failed。</div>
+
+<h2>日志完整性</h2>
+<div class="note">决策日志是哈希链：每条记录带 <code>prevHash</code>，指向上一条的 <code>hash</code>。
+本次 30/30 条链接校验一致 —— 任何一条被改动，后面的链接就对不上。
+<span class="ok-t">链完整</span></div>
+
+<h2>怎么自己复核（不联网、不花一分钱、不起模型）</h2>
+<ul>
+  <li><code>.\verify.ps1</code> —— 重新计算双轴判定并打印门禁轨迹</li>
+  <li><code>node scripts/show-verdict.ts workspace/brief-s3</code> —— 同上（跨平台）</li>
+  <li><code>calls.jsonl</code> —— 这次运行每一次模型调用的 purpose、用量、耗时、原始响应。想抽查哪一条判定怎么来的，就在这里</li>
+  <li><code>decisions.jsonl</code> —— 每条决策都在里面，按 seq 顺序、带哈希链</li>
+</ul>
+
+<div class="note" style="margin-top:30px">生成脚本：<code>scripts/build-evidence-package.ts</code> · 本页不含任何人工润色的数字</div>
+</body></html>

@@ -1,0 +1,9 @@
+做一个单页任务看板（后端 + 一个网页界面）。
+
+要求：
+1. `npm start` 启动并监听 127.0.0.1:<port>；GET /health 返回 {status:ok}。
+2. 任务字段：id、title（必填）、status（'todo' | 'doing' | 'done'，默认 'todo'）、createdAt。
+3. 接口：GET /api/tasks（支持 ?status= 过滤）、POST /api/tasks（title 缺失 → 400）、PATCH /api/tasks/{id}（不存在 → 404）、DELETE /api/tasks/{id}（不存在 → 404）。
+4. GET / 返回一个可直接用的 HTML 页面：能列出任务、能新建任务、能改状态、能删除；页面里的请求要打到上面这些接口。
+5. 内存存储即可。必须写测试，覆盖接口的正常与异常分支。
+6. 相对导入必须带 .ts 扩展名；只用 Node 内置模块，不引入任何第三方库。
