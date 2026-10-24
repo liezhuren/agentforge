@@ -453,13 +453,44 @@ export async function execCapture(command: string, opts: ExecOptions): Promise<E
         env: { ...process.env, ...(opts.env ?? {}) },
       });
 
-      const timer = setTimeout(() => {
-        timedOut = true;
+      /**
+       * 超时：必须**杀整棵进程树**，不能只杀直接子进程。
+       *
+       * 实测（2026-10-24，cb-14）：A5 跑 `npm test`，真实链路是
+       * `cmd.exe /c npm run test` → `npm` → `node run-tests.mjs`。
+       * 原来只 `child.kill('SIGKILL')`，杀掉的是 `cmd.exe`，
+       * **孙子进程 `node run-tests.mjs` 变孤儿继续跑**（实测活了 10 分钟，
+       * 还占着端口）—— 之后 A6 的探针会探到它，或者新 run 被端口冲突卡住。
+       *
+       * Windows 上用 `taskkill /T /F /PID`（`/T` = 连同子进程树）：
+       * 这是唯一能可靠回收整棵树的方式，因为 `SIGKILL` 在 Windows 上
+       * 只是 `TerminateProcess` 的别名，对子进程没有任何传播效果。
+       */
+      const killTree = (): void => {
+        const pid = child.pid;
+        if (pid !== undefined && process.platform === 'win32') {
+          try {
+            const killer = spawn('taskkill', ['/T', '/F', '/PID', String(pid)], {
+              stdio: 'ignore',
+              windowsHide: true,
+            });
+            killer.on('error', () => {
+              /* 没有 taskkill 就退回直接杀 */
+            });
+          } catch {
+            /* 退回直接杀 */
+          }
+        }
         try {
           child.kill('SIGKILL');
         } catch {
           /* ignore */
         }
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killTree();
       }, timeoutMs);
 
       const done = (exitCode: number) => {

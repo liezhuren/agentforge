@@ -76,6 +76,47 @@ export const STAGE_ANCHORS: Record<StageId, AnchorId[]> = {
 /** 归因优先级：问题落到谁头上，工单就派给谁。 */
 const ROLE_PRIORITY: RoleId[] = ['backend', 'frontend', 'test', 'pm'];
 
+/**
+ * 「失败签名」的构成单元：`锚点:code:文件:行`。
+ *
+ * 粒度是**刻意选的**：不含消息正文、不含 data、不含结论以外的任何东西。
+ * 因为它唯一的用途是回答「这一轮和上一轮是不是同一批问题」——
+ * 把消息正文放进去，模型每次措辞略变就会让签名不同，于是「没进展」永远判不出来
+ * （这正是下面 blockSignature 注释里那个 bug 的同族问题）。
+ */
+export function signatureParts(failures: AnchorRunResult[]): string[] {
+  const parts: string[] = [];
+  for (const f of failures) {
+    for (const finding of f.findings.filter((x) => x.severity === 'fail')) {
+      parts.push(`${f.anchorId}:${finding.code}:${finding.file ?? '-'}:${finding.line ?? '-'}`);
+    }
+  }
+  return parts;
+}
+
+/**
+ * 一次 Gate 被阻断时的**完整**签名。
+ *
+ * 必须覆盖所有能造成 blocked 的来源，缺一类就等于那一类永远不受「修复无效」保护：
+ *   - A 层事实锚（编译 / 测试 / 探针 / 契约 / 基准）
+ *   - B 层语义锚（B1 需求达成 / B2 需求覆盖 / B3 异议核验）
+ *   - 有效异议（主理人提出的、被机械裁判判为成立的）
+ *
+ * 返回 `null` 表示**这次没被阻断**（或阻断来源不可签名）——
+ * 与「签名是空字符串」区分开：后者会让「未阻断」和「阻断了但签名为空」混为一谈。
+ */
+export function blockSignature(args: {
+  failures: AnchorRunResult[];
+  objectionIds: string[];
+  blocked: boolean;
+}): string | null {
+  if (!args.blocked) return null;
+  const parts = signatureParts(args.failures);
+  for (const id of args.objectionIds) parts.push(`objection:${id}`);
+  if (parts.length === 0) return null;
+  return parts.sort().join('|');
+}
+
 export type GateDeps = {
   store: ArtifactStore;
   profile: ProjectProfile;
@@ -414,7 +455,28 @@ export class Gate {
       aLayerHealthy: true,
       summary,
       trigger,
-      hardFailureSignature: null,
+      /**
+       * ⚠️ 这里原来是 `null`，而那是一个**会让 REVIEW 无限重试**的 bug。
+       *
+       * 「修复无效」的判据是 `signature === lastHardFailureSignature && cycles > 1`
+       * （见 orchestrator.ts 的 RETRY_ROLE 分支）。而 REVIEW 的绝大多数阻断
+       * **不是 A 层（编译/测试/探针）造成的，是 B 层语义锚（B1 达成 / B2 覆盖）造成的** ——
+       * 那条路径正好走这个分支，签名于是恒为 `null`，判定永远不成立。
+       *
+       * 实测（cb-15，2026-10-24）：
+       *   REVIEW seq3 与 seq4 的失败**完全同构**
+       *   （B1:evidence-invalid ×15 + B2:deliverable-missing ×2 + B3:objection-evidence-invalid），
+       *   本应在 seq4 就判「修复无效」→ 带债通过，实际却一路 RETRY 到 seq5 被杀。
+       *   而单轮 REVIEW 要 3–6 分钟，`maxCyclesPerStage = 8` 意味着光空转就能吃掉 30 分钟。
+       *
+       * 现在签名覆盖**所有能造成 blocked 的来源**：A 层失败、B 层失败、有效异议。
+       * 只覆盖一半的签名比没有签名更糟 —— 它会让「有收敛」和「没收敛」看起来一样。
+       */
+      hardFailureSignature: blockSignature({
+        failures: anchors,
+        objectionIds: validObjections.map((o) => o.id),
+        blocked,
+      }),
       ...(escalation ? { escalation } : {}),
     });
     await this.record(result);
@@ -425,13 +487,7 @@ export class Gate {
 
   /** 硬失败签名：用于识别「同一批问题反复出现」。 */
   private signatureOf(failures: AnchorRunResult[]): string {
-    const parts: string[] = [];
-    for (const f of failures) {
-      for (const finding of f.findings.filter((x) => x.severity === 'fail')) {
-        parts.push(`${f.anchorId}:${finding.code}:${finding.file ?? '-'}:${finding.line ?? '-'}`);
-      }
-    }
-    return parts.sort().join('|');
+    return signatureParts(failures).sort().join('|');
   }
 
   private t4Reason(roles: string[], hasUnresolved: boolean): string {

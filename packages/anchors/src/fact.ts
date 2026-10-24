@@ -37,6 +37,18 @@ import { prepareSpawn } from '../../core/src/exec.ts';
 
 const SOURCE_EXT = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs'];
 
+/**
+ * A5（测试执行）的超时。
+ *
+ * 从 600 秒降到 300 秒，理由不是"跑得完"而是"卡住的代价"：
+ * 实测卡死是**句柄没关**（server 没 close），不是慢 —— 这种情况下等 10 分钟
+ * 和等 5 分钟拿到的是同一个结论，但**每轮多花 5 分钟**。
+ * 而一次 run 的 REVIEW 可能要走好几轮，5 分钟 × 5 轮就吃掉了整个回收窗口。
+ *
+ * 300 秒对正常测试套件仍然宽松（实测 cb-6 的 22 条测试全程 1 秒）。
+ */
+const A5_TIMEOUT_MS = 300_000;
+
 /** 每个 ctx 内缓存一次导入抽取结果，避免 A1/A2/A3 各扫一遍。 */
 const importsCache = new WeakMap<AnchorContext, Promise<ImportRef[]>>();
 
@@ -711,7 +723,7 @@ export const A5: Anchor = {
       };
     }
 
-    const r = await execCapture('', { cwd: ctx.projectRoot, trusted: cmd, timeoutMs: 600_000 });
+    const r = await execCapture('', { cwd: ctx.projectRoot, trusted: cmd, timeoutMs: A5_TIMEOUT_MS });
 
     if (r.spawnError) {
       return {
@@ -771,7 +783,38 @@ export const A5: Anchor = {
     }
     const failingNames = failingDetails.map((f) => f.name);
 
-    if (failed > 0 || r.exitCode !== 0) {
+    /**
+     * 超时是**独立的一类失败**，不能混进「exit 非零」里。
+     *
+     * 实测（2026-10-24，cb-14）：测试进程 10 分钟没退出，被强杀后 A5 报的是
+     * 「测试命令以非零码退出（exit -1），但未解析出失败计数」——
+     * 收到这句话的角色**根本不知道要修什么**（它会以为是断言失败）。
+     *
+     * 真实原因是**句柄没关**：测试里起了 HTTP server / setInterval / 连接，
+     * 进程因此无法自然退出。这是「测试写得不对」，不是「断言挂了」，
+     * 两者对应完全不同的修法。所以单独报，并直接给出修法。
+     */
+    if (r.timedOut) {
+      findings.push({
+        code: 'test-run-timeout',
+        severity: 'fail',
+        message:
+          `测试命令运行超过 ${Math.round(A5_TIMEOUT_MS / 1000)} 秒仍未退出，已被强制终止（连同子进程树）。` +
+          '这通常**不是**断言失败，而是测试里有未关闭的句柄：起了 HTTP server、定时器或数据库连接，' +
+          '导致进程无法自然结束。请在测试结束时 close() 掉这些资源；' +
+          '若确实需要常驻，在测试运行器末尾显式 process.exit()。',
+        targetRole: 'test',
+        data: {
+          timeoutMs: A5_TIMEOUT_MS,
+          exitCode: r.exitCode,
+          stdoutTail: r.stdout.slice(-400),
+          stderrTail: r.stderr.slice(-400),
+        },
+      });
+    }
+
+    // 超时时不再重复报「exit 非零但解析不出计数」—— 那句话会把「没退出」误导成「断言挂了」
+    if (!r.timedOut && (failed > 0 || r.exitCode !== 0)) {
       findings.push({
         code: 'tests-failed',
         severity: 'fail',
