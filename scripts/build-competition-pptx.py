@@ -140,79 +140,98 @@ def arrow(s, x1, y1, x2, y2, color=LINE):
 # 第 1 页 · 标题
 # ══════════════════════════════════════════════════════════════
 s = slide()
-bar = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.7), Inches(2.05), Inches(0.12), Inches(2.1))
-bar.fill.solid()
-bar.fill.fore_color.rgb = ACCENT
-bar.line.fill.background()
+header(s, "项目概述", "AgentForge",
+       "让 AI 面对复杂任务时不跑偏、不走样、可被验证")
 
-t = text(s, Inches(1.05), Inches(1.9), Inches(11), Inches(1.9), 44, FG, True)
-para(t.text_frame, "AgentForge", 44, FG, True, first=True)
-para(t.text_frame, "让「AI 说它做完了」变成能被机械证明的交付", 28, ACCENT, True, space_before=10)
+# 左：解决什么问题
+p = panel(s, Inches(0.7), Inches(1.95), Inches(5.85), Inches(3.05))
+tf = p.text_frame
+tf.word_wrap = True
+tf.margin_left = Emu(182880)
+tf.margin_top = Emu(137160)
+para(tf, "解决什么问题", 15, BAD, True, first=True)
+para(tf, "① 上下文越长，目标偏移越严重", 13, FG, True, space_before=12)
+para(tf, "而复杂任务必然带来长上下文 —— 模型写着写着就忘了最初要什么", 11, MUTED, space_before=2)
+para(tf, "② 单次生成质量不稳", 13, FG, True, space_before=10)
+para(tf, "同一份需求两次生成，结果不一样 —— 无法复现，也无法回归", 11, MUTED, space_before=2)
+para(tf, "③ 生成结果难以验证", 13, FG, True, space_before=10)
+para(tf, "「看起来做完了」和「真的做完了」在代码库里长得几乎一样", 11, MUTED, space_before=2)
 
-t = text(s, Inches(1.05), Inches(4.15), Inches(10.5), Inches(0.9), 15, MUTED)
-para(t.text_frame, "一个带确定性验收的多角色 AI 研发引擎", 15, MUTED, first=True)
-para(t.text_frame, "11 条锚点 · 5 个角色 · 8 个阶段 · 401 个测试 · 靶场零误报", 13, MUTED, space_before=6)
+# 右：最终做出了什么
+p = panel(s, Inches(6.78), Inches(1.95), Inches(5.85), Inches(3.05))
+tf = p.text_frame
+tf.word_wrap = True
+tf.margin_left = Emu(182880)
+tf.margin_top = Emu(137160)
+para(tf, "最终做出了什么", 15, ACCENT, True, first=True)
+para(tf, "一个多角色研发引擎", 13, FG, True, space_before=12)
+para(tf, "8 个阶段 · 11 条确定性锚点 · LLM 只负责产出，永远不是最终裁判", 11, MUTED, space_before=2)
+para(tf, "产物 A：可运行的系统", 13, FG, True, space_before=10)
+para(tf, "茶歇系统 22 / 22 测试、33 / 33 端到端，零依赖即可启动", 11, MUTED, space_before=2)
+para(tf, "产物 B：可复核的交付结论", 13, FG, True, space_before=10)
+para(tf, "14/14 与 22/22 条需求逐条确认达成，fullyVerified = true", 11, MUTED, space_before=2)
 
-# 关键结果条
-res = panel(s, Inches(0.7), Inches(5.35), Inches(11.93), Inches(1.05), PANEL)
+# 底部证据条
+res = panel(s, Inches(0.7), Inches(5.22), Inches(11.93), Inches(0.95), PANEL, ACCENT)
 tf = res.text_frame
 tf.word_wrap = True
 tf.margin_left = Emu(182880)
 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-para(tf, "实跑结果（可复核）：AI 产出的茶歇系统 —— 单元测试 22 / 22，端到端验收 33 / 33，零第三方依赖即可启动",
-     15, ACCENT, True, first=True)
-para(tf, "产物：demo/coffeebreak/   ·   证据：docs/competition/evidence/", 12, MUTED, space_before=4)
+para(tf, "真实大模型完整交付 ×2（14/14 与 22/22 需求达成）· 每次 7 个门禁 · 两次打回都被修好 · 0 技术债",
+     14, ACCENT, True, first=True)
+para(tf, "凭证：docs/competition/evidence/brief-s3/（verdict / gates / decisions / 调用记录）", 11, MUTED, space_before=3)
 
-t = text(s, Inches(0.7), Inches(6.65), Inches(7), Inches(0.4), 12, MUTED)
+t = text(s, Inches(0.7), Inches(6.42), Inches(7), Inches(0.35), 12, MUTED)
 para(t.text_frame, "刘泽 · B23040610", 12, MUTED, first=True)
 
 # ══════════════════════════════════════════════════════════════
 # 第 2 页 · 痛点：假绿灯
 # ══════════════════════════════════════════════════════════════
 s = slide()
-header(s, "问题", "AI 编程的失败是「假绿灯」式的",
-       "看起来完整，实际跑不起来 —— 而工具自己不知道")
+header(s, "问题与目标", "AI 生成的两个本质问题：随机，且难验证",
+       "真正的瓶颈不是「能不能生成」，而是「敢不敢把它交付出去」")
 
-col_w = Inches(5.75)
-# 左：AI 说
-p = panel(s, Inches(0.7), Inches(1.95), col_w, Inches(3.55))
+col_w = Inches(5.85)
+# 左：为什么值得解决
+p = panel(s, Inches(0.7), Inches(1.95), col_w, Inches(3.45))
 tf = p.text_frame
 tf.word_wrap = True
 tf.margin_left = Emu(182880)
 tf.margin_top = Emu(137160)
-para(tf, "表面指标（工具说）", 16, WARN, True, first=True)
-para(tf, "✓  18 个模块 / 4,443 行代码", 14, FG, space_before=14)
-para(tf, "✓  tsc --noEmit 通过（编译没问题）", 14, FG, space_before=8)
-para(tf, "✓  17 个契约端点「代码里全都实现了」", 14, FG, space_before=8)
-para(tf, "✓  写了 39 条测试", 14, FG, space_before=8)
+para(tf, "为什么值得解决", 15, BAD, True, first=True)
+para(tf, "随机性", 13, FG, True, space_before=12)
+para(tf, "同一需求两次生成结果不同 —— 无法复现、无法回归、也无法承诺", 11, MUTED, space_before=2)
+para(tf, "难验证", 13, FG, True, space_before=10)
+para(tf, "模型说「完成了」，但编译、测试、真实运行都可能不成立；", 11, MUTED, space_before=2)
+para(tf, "而用另一个 LLM 去验证，等于让被告当法官", 11, WARN, space_before=2)
+para(tf, "实测反例（我们自己的产物）", 12, FG, True, space_before=10)
+para(tf, "4,443 行代码 · tsc 通过 · 39 条测试 —— 12 个端点却一律返回 501，", 10, MUTED, space_before=2)
+para(tf, "而当时的检查报「17 个端点全部已实现」", 10, MUTED, space_before=1)
 
-# 右：真实
-p = panel(s, Inches(6.88), Inches(1.95), col_w, Inches(3.55))
+# 右：成功标准
+p = panel(s, Inches(6.78), Inches(1.95), col_w, Inches(3.45))
 tf = p.text_frame
 tf.word_wrap = True
 tf.margin_left = Emu(182880)
 tf.margin_top = Emu(137160)
-para(tf, "真实结果（跑一下）", 16, BAD, True, first=True)
-para(tf, "✗  12 个端点一律返回 HTTP 501", 14, FG, space_before=14)
-para(tf, "✗  39 条测试里 26 条失败", 14, FG, space_before=8)
-para(tf, "✗  业务模块一次都没被调用", 14, FG, space_before=8)
-para(tf, "✗  A7 锚点当时报「全部端点已实现」", 14, FG, space_before=8)
+para(tf, "成功标准（可判定，不靠主观）", 15, ACCENT, True, first=True)
+para(tf, "① 机械层全过", 13, FG, True, space_before=12)
+para(tf, "编译通过 · 测试真跑且全绿 · 服务真启动并响应 HTTP 探针", 11, MUTED, space_before=2)
+para(tf, "② 需求层逐条判定", 13, FG, True, space_before=10)
+para(tf, "每条需求的判定必须附真实文件与真实行号区间；编造证据 → 整条作废", 11, MUTED, space_before=2)
+para(tf, "③ 不许自我满足", 13, FG, True, space_before=10)
+para(tf, "空交付 / SKIPPED / 带债 都必须显式记账，且都不算「通过」", 11, MUTED, space_before=2)
+para(tf, "三条同时满足 = fullyVerified（真·完整交付）", 12, ACCENT, True, space_before=12)
 
-# 中间箭头
-ar = s.shapes.add_shape(MSO_SHAPE.RIGHT_ARROW, Inches(6.42), Inches(3.45), Inches(0.46), Inches(0.5))
-ar.fill.solid()
-ar.fill.fore_color.rgb = LINE
-ar.line.fill.background()
-
-# 代码证据
-p = panel(s, Inches(0.7), Inches(5.68), Inches(11.93), Inches(1.15))
+# 底部：这条标准已经被用过两次
+p = panel(s, Inches(0.7), Inches(5.55), Inches(11.93), Inches(0.9))
 tf = p.text_frame
 tf.word_wrap = True
 tf.margin_left = Emu(182880)
 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-para(tf, "根子是一行代码：鉴权通过后直接 sendJson(res, 501, { error: 'not implemented yet' }) 然后 return —— 从不调用业务模块",
-     13, FG, True, first=True)
-para(tf, "而 4 个 handleXxx() 全都「导出了、无人调用」。这是我自己跑出来的真实产物，不是编的例子。", 12, MUTED, space_before=4)
+para(tf, "这条标准不是口号 —— 同一套判据，刚刚用出两个相反结果：", 12, ACCENT, True, first=True)
+para(tf, "① 认证了两次真交付（14/14、22/22 + fullyVerified）　② 拦下了一次空交付（只有规格、零代码，被判 fail）",
+     11, MUTED, space_before=3)
 footer(s)
 
 # ══════════════════════════════════════════════════════════════
@@ -227,7 +246,7 @@ shot_w = Inches(7.05)
 shot_h = int(shot_w * 900 / 1440)
 s.shapes.add_picture(SHOT, Inches(0.7), Inches(1.98), width=shot_w, height=shot_h)
 cap = text(s, Inches(0.7), Inches(1.98) + shot_h + Inches(0.08), Inches(7.05), Inches(0.3), 10, MUTED)
-para(cap.text_frame, "真实界面截图（headless 浏览器，1440×900）· 用 admin / admin123 登录后可见全部功能", 10, MUTED, first=True)
+para(cap.text_frame, "真实界面截图（headless 浏览器，1440×900）· 20 个 TypeScript 源文件 · 22/22 测试 · 33/33 端到端", 10, MUTED, first=True)
 
 # 右侧：数字与旅程
 x = Inches(8.05)
@@ -530,8 +549,8 @@ tf.margin_left = Emu(182880)
 tf.margin_top = Emu(137160)
 tf.vertical_anchor = MSO_ANCHOR.TOP
 para(tf, "已经做到", 16, ACCENT, True, first=True)
-para(tf, "一个 AI 写出来、真的能跑的系统", 13, FG, space_before=14)
-para(tf, "单元测试 22 / 22，端到端 33 / 33，零依赖启动", 11, MUTED, space_before=2)
+para(tf, "真实大模型完整交付过一次", 13, FG, space_before=14)
+para(tf, "14/14 与 22/22 需求达成，fullyVerified = true，0 技术债", 11, MUTED, space_before=2)
 para(tf, "11 条确定性锚点 + 401 个测试守着「检查本身是对的」", 13, FG, space_before=10)
 para(tf, "靶场 45 样本零误报", 11, MUTED, space_before=2)
 para(tf, "一条可复用的方法论", 13, FG, space_before=10)
@@ -544,8 +563,8 @@ tf.margin_left = Emu(182880)
 tf.margin_top = Emu(137160)
 tf.vertical_anchor = MSO_ANCHOR.TOP
 para(tf, "还没做到（诚实）", 16, WARN, True, first=True)
-para(tf, "没有一次自主跑到最终交付", 13, FG, space_before=14)
-para(tf, "成功那轮在最后一道关卡之后进程被环境回收 —— 产品是好的，编排没结账", 11, MUTED, space_before=2)
+para(tf, "成功率还不稳定", 13, FG, space_before=14)
+para(tf, "四个平行任务里两个交付、一个仍在返工、一个卡在契约一致性", 11, MUTED, space_before=2)
 para(tf, "四轮并行只成一，方差还大", 13, FG, space_before=10)
 para(tf, "卡点集中在契约生成质量", 11, MUTED, space_before=2)
 para(tf, "B1 / B3 在成功那轮是 SKIPPED", 13, FG, space_before=10)
