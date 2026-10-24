@@ -208,7 +208,19 @@ export const contractSchema: JsonSchema = {
       required: ['openapi', 'paths'],
       properties: {
         openapi: { type: 'string' },
-        paths: { type: 'object' },
+        /**
+         * `minProperties: 1` —— 契约至少要声明一条路径。
+         *
+         * 实测（brief-s1 / agentforge-project，2026-10-24）：PM 交过这样的契约 ——
+         * 数据模型写了 4–7 个，但 `paths` 里只有 `/health`；与此同时任务图照常
+         * 声明 `/api/tasks`、`/api/tasks/{id}`。于是 A7 每轮报 `phantom-contract-path`，
+         * 连改 9 轮不动，最后带债收场。
+         *
+         * 一份没有任何接口路径的契约在语义上是空的：它不构成对实现的任何约束，
+         * 却会被 `store.freeze()` 冻结成判定基准，让下游全部对着它判漂移。
+         * 这里把它变成**当场校验失败**，让模型立刻重试，而不是流到 Gate 才被发现。
+         */
+        paths: { type: 'object', minProperties: 1 },
         components: {},
       },
     },

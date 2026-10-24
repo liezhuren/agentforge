@@ -9,6 +9,7 @@
  * 支持的子集：type / properties / required / additionalProperties /
  * items / enum / const / oneOf / anyOf / allOf / not /
  * minimum / maximum / minLength / maxLength / minItems / maxItems /
+ * minProperties / maxProperties /
  * pattern / $ref（指向 #/$defs/*）
  */
 
@@ -161,6 +162,39 @@ export function validateSchema(
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
     const props = (schema.properties ?? {}) as Record<string, JsonSchema>;
+
+    /**
+     * minProperties / maxProperties —— 补这两个关键字的理由是一次真实失败。
+     *
+     * 实测（brief-s1、agentforge-project，2026-10-24）：PM 交上来的契约里
+     * **只写了 7 个数据模型、一个接口路径都没有**（`paths` 只有 `/health`，
+     * 甚至可能为空），而任务图照常声明了 `/api/tasks` 等端点 ——
+     * 于是 A7 每轮都报 `phantom-contract-path`，连续 9 轮改不动，最后带债收场。
+     *
+     * 更糟的是：校验器**根本不支持** `minProperties`，所以「契约必须至少声明一条路径」
+     * 这句约束当时根本没法表达 —— 一份空契约是完全合法的。这不是模型的问题，
+     * 是**我们能表达的约束少了一类**。
+     */
+    if (typeof schema.minProperties === 'number') {
+      const n = Object.keys(obj).length;
+      if (n < schema.minProperties) {
+        errors.push({
+          path,
+          keyword: 'minProperties',
+          message: `对象至少要 ${schema.minProperties} 个字段，实际 ${n} 个`,
+        });
+      }
+    }
+    if (typeof schema.maxProperties === 'number') {
+      const n = Object.keys(obj).length;
+      if (n > schema.maxProperties) {
+        errors.push({
+          path,
+          keyword: 'maxProperties',
+          message: `对象至多 ${schema.maxProperties} 个字段，实际 ${n} 个`,
+        });
+      }
+    }
 
     if (Array.isArray(schema.required)) {
       for (const key of schema.required as string[]) {

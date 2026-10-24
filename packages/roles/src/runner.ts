@@ -21,6 +21,7 @@ import type { Artifact, ArtifactKind, CodeModule, RoleId, WorkOrder } from '../.
 import type { ArtifactStore } from '../../core/src/store.ts';
 import { digestContract } from '../../core/src/contractdigest.ts';
 import { renderModuleCards } from './modulecard.ts';
+import { contractCoverageErrors } from './contractcoverage.ts';
 // LlmRequest 属于 llm 包（原写成从 core 导入 —— 那个成员不存在，且运行时被擦除所以从不报错）
 import type { LlmContextReport, LlmRequest } from '../../llm/src/types.ts';
 import type { Logger } from '../../core/src/logger.ts';
@@ -293,6 +294,23 @@ export class LlmRoleRunner implements RoleRunner {
       }
 
       const errors = validateSchema(res.json, schema, schema);
+
+      /**
+       * 跨工件校验：契约必须声明任务图要用到的每一条路径。
+       *
+       * 实测（brief-s1 / agentforge-project）：PM 的任务图声明了 `/api/tasks`、
+       * `/api/tasks/{id}`，契约却只写了 `/health` —— 两份工件各自合法、放在一起矛盾，
+       * 于是 A7 连报 9 轮 `phantom-contract-path`，最后带债收场。
+       * 当时没有任何机制能在**生成时**发现它（`minProperties: 1` 只能拦完全空的 paths）。
+       *
+       * 这里把缺口转成与 schema 错误同构的条目，复用下面现成的「回喂 → 重试」，
+       * 让 PM 当场补齐，而不是等一整轮 Gate 之后被判罚。
+       */
+      if (errors.length === 0 && req.kind === 'Contract') {
+        const tg = ctx.store.head('TaskGraph');
+        if (tg) errors.push(...contractCoverageErrors(res.json, tg.content));
+      }
+
       if (errors.length === 0) {
         return { kind: req.kind, content: res.json, attempts: attempt + 1, ...(lastLlm ? { llm: lastLlm } : {}) };
       }
