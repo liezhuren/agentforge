@@ -25,6 +25,7 @@ import { SemanticVerifier } from '../../roles/src/verify.ts';
 import { Orchestrator, type RunSummary } from '../../orchestrator/src/orchestrator.ts';
 import { deriveProfile } from '../../orchestrator/src/cli-run.ts';
 import { seedLlmWorkspace } from '../../orchestrator/src/llm-workspace.ts';
+import { validateBrief } from '../../orchestrator/src/brief.ts';
 import {
   DEMO_PROJECT_NAME,
   DEMO_SCENARIOS,
@@ -363,6 +364,10 @@ export class RunManager {
     const mode: RunMode = req.mode ?? 'demo';
     const projectName = req.projectName ?? (mode === 'demo' ? DEMO_PROJECT_NAME : 'agentforge-project');
     const brief = req.brief ?? DEMO_USER_BRIEF;
+    // 启动前校验诉求（与 cli-run 同一套规则）：空/截断/shell 片段的输入必须当场拒绝，
+    // 否则会花几万 token 去「澄清」一个根本不该被接受的输入。
+    const briefCheck = validateBrief(brief);
+    if (!briefCheck.ok) throw new Error(briefCheck.reason);
     const workspace = resolve(join(this.workspaceRoot, projectName));
 
     if (req.fresh !== false) await rm(workspace, { recursive: true, force: true });

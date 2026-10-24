@@ -46,6 +46,7 @@ import {
 import { createBoundRoleRunners } from '../../roles/src/index.ts';
 import { SemanticVerifier } from '../../roles/src/verify.ts';
 import { Orchestrator } from './orchestrator.ts';
+import { validateBrief } from './brief.ts';
 
 const DEFAULT_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
 
@@ -86,6 +87,26 @@ export async function runCli(io: CliIO): Promise<number> {
   const err = io.err ?? ((s: string) => console.error(s));
   const root = io.root ?? DEFAULT_ROOT;
   const { get, has, sub } = parseArgs(io.argv);
+
+  /**
+   * 诉求校验放在**最前面**，早于配置加载与能力探测。
+   *
+   * 理由：被截断的诉求（实测 cb-18：`"(Get-Content"`）是**调用方的输入错误**，
+   * 应当在花掉任何一次模型调用之前就拒绝。我第一版把它放在探测之后，
+   * 结果仍然白跑了一次能力探测 —— 用户看到的输出也变成先"探测成功"再"拒绝启动"，
+   * 那个顺序会让人以为是探测出了问题。
+   */
+  if (sub === undefined && !has('replay')) {
+    const earlyBrief = get('brief');
+    if (earlyBrief !== undefined) {
+      const check = validateBrief(earlyBrief);
+      if (!check.ok) {
+        err(`${C.red}原始诉求不合法，已拒绝启动：${C.reset}`);
+        err(check.reason);
+        return 2;
+      }
+    }
+  }
 
   // ── init ────────────────────────────────────────────────────
   if (sub === 'init') {
@@ -254,6 +275,15 @@ export async function runCli(io: CliIO): Promise<number> {
 
   const brief =
     get('brief') ?? '做一个任务看板：用户可以创建任务、列出全部任务，并支持按状态筛选。';
+
+  // 启动前校验诉求：截断/空/明显是 shell 片段的输入必须当场拒绝，
+  // 否则系统会花几万 token 去「澄清」一个根本不该被接受的输入（cb-18 的事故）。
+  const briefCheck = validateBrief(brief);
+  if (!briefCheck.ok) {
+    out(`${C.red}原始诉求不合法，已拒绝启动：${C.reset}`);
+    out(briefCheck.reason);
+    return 2;
+  }
 
   /**
    * 退出钩子 + 心跳：让「进程为什么没了」变成可查的事实。

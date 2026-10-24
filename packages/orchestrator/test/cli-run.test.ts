@@ -201,7 +201,7 @@ test('CLI：--replay 用已录制调用离线复现，且不发起任何真实�
 
     // 首次真实运行（固定 runId 以便回放）
     const first = collector();
-    await runCli({ argv: ['--brief', 'x', '--name', 'ws'], cwd, root: cwd, out: first.fn, err: () => {} });
+    await runCli({ argv: ['--brief', '做一个任务看板：能创建任务、列出全部任务', '--name', 'ws'], cwd, root: cwd, out: first.fn, err: () => {} });
 
     // 从 runs 目录取出唯一的 runId
     const { readdir } = await import('node:fs/promises');
@@ -213,7 +213,7 @@ test('CLI：--replay 用已录制调用离线复现，且不发起任何真实�
 
     // 回放：把 server 换成一个必然 500 的端点，若回放真的不联网就完全不受影响
     const o = collector();
-    const code = await runCli({ argv: ['--replay', runId, '--brief', 'x', '--name', 'ws'], cwd, root: cwd, out: o.fn, err: () => {} });
+    const code = await runCli({ argv: ['--replay', runId, '--brief', '做一个任务看板：能创建任务、列出全部任务', '--name', 'ws'], cwd, root: cwd, out: o.fn, err: () => {} });
     assert.equal(code, 0, o.lines.join('\n'));
     assert.ok(o.lines.join('\n').includes('回放模式'));
     assert.ok(o.lines.join('\n').includes('不会发起任何真实请求'));
