@@ -1,10 +1,20 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title AgentForge console
+
+REM Usage:  start-console.cmd [port]
+REM         no argument -> 7788
+REM Two consoles side by side:
+REM   start-console.cmd 7788   (offline demo)
+REM   start-console.cmd 7789   (real LLM)
+
+set PORT=%1
+if "%PORT%"=="" set PORT=7788
+
+title AgentForge console %PORT%
 
 echo ============================================================
-echo  AgentForge - console
+echo  AgentForge console   port %PORT%
 echo ============================================================
 echo.
 
@@ -19,15 +29,14 @@ if errorlevel 1 (
 
 for /f "delims=" %%v in ('node -v') do set NODEVER=%%v
 echo [OK] Node %NODEVER%
-echo.
 
 if not exist "apps\web\dist\index.html" (
-  echo [INFO] Frontend bundle is missing - building now ^(needs network once^)...
+  echo [INFO] Frontend bundle is missing - building now (needs network once)...
   pushd apps\web
   call npm install
   if errorlevel 1 (
     echo [ERROR] npm install failed. No network? Copy the whole folder from the
-    echo         machine where it already works ^(it must include apps\web\dist^).
+    echo         machine where it already works (it must include apps\web\dist).
     popd
     pause
     exit /b 1
@@ -41,15 +50,15 @@ if not exist "apps\web\dist\index.html" (
   )
   popd
   echo [OK] Frontend built.
-  echo.
 )
 
-echo [INFO] Starting console on http://127.0.0.1:7788
-echo        Keep this window open. Press Ctrl+C to stop.
 echo.
-start "" http://127.0.0.1:7788
-node packages\server\src\cli.ts --port 7788
+echo [INFO] http://127.0.0.1:%PORT%
+echo        Keep this window open. Ctrl+C stops THIS console only.
+echo.
+start "" http://127.0.0.1:%PORT%
+node packages\server\src\cli.ts --port %PORT%
 
 echo.
-echo [INFO] Server stopped.
+echo [INFO] Server on port %PORT% stopped.
 pause
